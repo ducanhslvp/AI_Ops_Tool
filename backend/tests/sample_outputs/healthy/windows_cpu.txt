@@ -1,0 +1,4 @@
+Timestamp                  CounterSamples
+---------                  --------------
+7/21/2026 3:42:18 PM       \\crm-windows-01\processor(_total)\% processor time :
+                           12.4819934721

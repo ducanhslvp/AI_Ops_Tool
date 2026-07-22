@@ -1,0 +1,4 @@
+LocalAddress LocalPort RemoteAddress RemotePort State       OwningProcess
+------------ --------- ------------- ---------- -----       -------------
+10.20.1.12   49720     10.20.1.14    1521       Established 4280
+0.0.0.0      8443      0.0.0.0       0          Listen      6152

@@ -1,0 +1,5 @@
+USER         PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
+app         1842  3.7  2.3 1643280 186432 ?      Ssl  Jul13  92:18 /usr/bin/java -jar erp-api.jar
+redis       1027  0.7  0.4 174228 29840 ?        Ssl  Jul13  31:06 /usr/bin/redis-server 127.0.0.1:6379
+www-data    1265  0.2  0.1 55216 10452 ?         S    Jul13   7:12 nginx: worker process
+postgres     944  0.1  1.4 308116 114228 ?       Ss   Jul13  12:44 postgres: checkpointer

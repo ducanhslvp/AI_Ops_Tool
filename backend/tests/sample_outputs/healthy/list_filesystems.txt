@@ -1,0 +1,7 @@
+{
+  "filesystems": [
+    {"target":"/","source":"/dev/mapper/ubuntu--vg-root","fstype":"ext4","size":"78G","options":"rw,relatime"},
+    {"target":"/data","source":"/dev/sdb1","fstype":"xfs","size":"500G","options":"rw,noatime"},
+    {"target":"/var/lib/docker","source":"/dev/sdc1","fstype":"xfs","size":"200G","options":"rw,noatime"}
+  ]
+}

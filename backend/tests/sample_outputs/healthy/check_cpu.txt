@@ -1,0 +1,10 @@
+top - 15:42:18 up 37 days,  6:14,  2 users,  load average: 0.42, 0.51, 0.47
+Tasks: 214 total,   1 running, 213 sleeping,   0 stopped,   0 zombie
+%Cpu(s):  4.2 us,  1.1 sy,  0.0 ni, 94.3 id,  0.2 wa,  0.0 hi,  0.2 si,  0.0 st
+MiB Mem :   7952.4 total,   2841.0 free,   2214.6 used,   2896.8 buff/cache
+MiB Swap:   2048.0 total,   2048.0 free,      0.0 used.   5291.2 avail Mem
+
+    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND
+   1842 app       20   0 1643280 186432  42312 S   3.7   2.3  92:18.41 java
+   1027 redis     20   0  174228  29840   9120 S   0.7   0.4  31:06.18 redis-server
+    901 root      20   0  238916  18452  10920 S   0.3   0.2  18:44.07 systemd-journal

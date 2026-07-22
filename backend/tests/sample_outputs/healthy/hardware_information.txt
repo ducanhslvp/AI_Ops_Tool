@@ -1,0 +1,4 @@
+8
+MemTotal:       32768000 kB
+sda 536870912000 disk
+sdb 1073741824000 disk

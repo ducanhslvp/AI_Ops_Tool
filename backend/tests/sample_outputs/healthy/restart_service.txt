@@ -1,0 +1,2 @@
+Job for nginx.service completed successfully.
+nginx.service is active (running).

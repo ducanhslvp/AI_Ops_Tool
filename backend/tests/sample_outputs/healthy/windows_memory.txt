@@ -1,0 +1,6 @@
+WindowsProductName : Windows Server 2022 Datacenter
+TotalVisibleMemorySize : 16776780
+FreePhysicalMemory : 9824512
+TotalVirtualMemorySize : 19398220
+FreeVirtualMemory : 14401876
+LastBootUpTime : 7/14/2026 2:31:08 AM

@@ -1,0 +1,8 @@
+NumberOfLogicalProcessors TotalPhysicalMemory
+------------------------- -------------------
+8                         34359738368
+
+DeviceID           Size
+--------           ----
+\\.\PHYSICALDRIVE0 536870912000
+\\.\PHYSICALDRIVE1 1073741824000

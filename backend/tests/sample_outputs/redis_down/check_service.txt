@@ -1,0 +1,8 @@
+× redis-server.service - Advanced key-value store
+     Loaded: loaded (/lib/systemd/system/redis-server.service; enabled; preset: enabled)
+     Active: failed (Result: exit-code) since Tue 2026-07-21 15:31:42 +07; 15min ago
+    Process: 29112 ExecStart=/usr/bin/redis-server /etc/redis/redis.conf (code=exited, status=1/FAILURE)
+   Main PID: 29112 (code=exited, status=1/FAILURE)
+
+Jul 21 15:31:42 erp-redis-01 redis-server[29112]: Creating Server TCP listening socket 127.0.0.1:6379: bind: Address already in use
+Jul 21 15:31:42 erp-redis-01 systemd[1]: redis-server.service: Failed with result 'exit-code'.

@@ -1,0 +1,5 @@
+tcp ESTAB 0 0 10.20.1.11:47622 10.20.1.13:6379 users:(("erp-api",pid=1842,fd=31))
+tcp ESTAB 0 0 10.20.1.11:49880 10.20.1.14:1521 users:(("erp-api",pid=1842,fd=42))
+tcp ESTAB 0 0 10.30.1.11:51422 10.30.1.12:9092 users:(("crm-worker",pid=2140,fd=18))
+tcp LISTEN 0 511 0.0.0.0:443 0.0.0.0:* users:(("nginx",pid=1120,fd=7))
+tcp LISTEN 0 4096 0.0.0.0:8080 0.0.0.0:* users:(("erp-api",pid=1842,fd=9))

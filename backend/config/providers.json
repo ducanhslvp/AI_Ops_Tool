@@ -1,0 +1,11 @@
+{
+  "active_provider": "mock",
+  "fallback_providers": ["mock"],
+  "retries": 2,
+  "retry_base_delay_seconds": 0.25,
+  "request_timeout_seconds": 90,
+  "max_tool_rounds": 4,
+  "providers": {
+    "mock": {"type": "mock", "model": "mock-operations-v1"}
+  }
+}

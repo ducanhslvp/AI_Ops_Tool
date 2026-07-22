@@ -1,0 +1,5 @@
+Name           CommandLine
+----           -----------
+ERPWorker.exe  D:\Apps\ERP\ERPWorker.exe --port 8443
+sqlservr.exe   "C:\Program Files\Microsoft SQL Server\MSSQL\Binn\sqlservr.exe"
+svchost.exe    C:\Windows\System32\svchost.exe -k netsvcs

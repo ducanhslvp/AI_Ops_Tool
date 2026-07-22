@@ -1,0 +1,190 @@
+{
+  "active_profile": "kafka_lag",
+  "commands": [
+    {
+      "action": "check_disk",
+      "arguments": {},
+      "id": "check_disk",
+      "os_name": "Ubuntu 24.04",
+      "profile_id": "healthy"
+    },
+    {
+      "action": "check_memory",
+      "arguments": {},
+      "id": "check_memory",
+      "os_name": "Ubuntu 24.04",
+      "profile_id": "healthy"
+    },
+    {
+      "action": "check_cpu",
+      "arguments": {},
+      "id": "check_cpu",
+      "os_name": "Ubuntu 24.04",
+      "profile_id": "healthy"
+    },
+    {
+      "action": "hardware_information",
+      "arguments": {},
+      "id": "hardware_information",
+      "os_name": "Ubuntu 24.04",
+      "profile_id": "healthy"
+    },
+    {
+      "action": "check_service",
+      "arguments": {
+        "service": "nginx"
+      },
+      "id": "check_service",
+      "os_name": "Ubuntu 24.04",
+      "profile_id": "healthy"
+    },
+    {
+      "action": "journal_service_log",
+      "arguments": {
+        "lines": 100,
+        "service": "nginx"
+      },
+      "id": "journal_log",
+      "os_name": "Ubuntu 24.04",
+      "profile_id": "healthy"
+    },
+    {
+      "action": "docker_ps",
+      "arguments": {},
+      "id": "docker_ps",
+      "os_name": "Ubuntu 24.04",
+      "profile_id": "healthy"
+    },
+    {
+      "action": "kubectl_get_pods",
+      "arguments": {
+        "namespace": "default"
+      },
+      "id": "kubectl_pods",
+      "os_name": "Ubuntu 24.04",
+      "profile_id": "healthy"
+    },
+    {
+      "action": "list_filesystems",
+      "arguments": {},
+      "id": "list_filesystems",
+      "os_name": "Ubuntu 24.04",
+      "profile_id": "healthy"
+    },
+    {
+      "action": "list_services",
+      "arguments": {},
+      "id": "list_services",
+      "os_name": "Ubuntu 24.04",
+      "profile_id": "healthy"
+    },
+    {
+      "action": "list_connections",
+      "arguments": {},
+      "id": "list_connections",
+      "os_name": "Ubuntu 24.04",
+      "profile_id": "healthy"
+    },
+    {
+      "action": "list_deployed_applications",
+      "arguments": {},
+      "id": "list_applications",
+      "os_name": "Ubuntu 24.04",
+      "profile_id": "healthy"
+    },
+    {
+      "action": "docker_inventory",
+      "arguments": {},
+      "id": "docker_inventory",
+      "os_name": "Ubuntu 24.04",
+      "profile_id": "healthy"
+    },
+    {
+      "action": "kubernetes_inventory",
+      "arguments": {},
+      "id": "kubernetes_inventory",
+      "os_name": "Ubuntu 24.04",
+      "profile_id": "healthy"
+    }
+  ],
+  "profiles": {
+    "cpu_high": {
+      "description": "Application workers saturate CPU",
+      "exit_codes": {},
+      "name": "CPU High",
+      "overrides": {
+        "check_cpu": "check_cpu",
+        "check_process": "check_process"
+      }
+    },
+    "disk_full": {
+      "description": "Root filesystem is critically full",
+      "exit_codes": {},
+      "name": "Disk Full",
+      "overrides": {
+        "check_disk": "check_disk"
+      }
+    },
+    "healthy": {
+      "description": "Normal utilization and available services",
+      "exit_codes": {},
+      "name": "Healthy Server",
+      "overrides": {}
+    },
+    "kafka_lag": {
+      "description": "Kafka broker is online with a growing consumer lag signal",
+      "exit_codes": {},
+      "name": "Kafka Lag",
+      "overrides": {
+        "tail_log": "tail_log"
+      }
+    },
+    "memory_leak": {
+      "description": "Java process consumes most available memory",
+      "exit_codes": {},
+      "name": "Memory Leak",
+      "overrides": {
+        "check_memory": "check_memory",
+        "check_process": "check_process"
+      }
+    },
+    "network_timeout": {
+      "description": "Interface errors and unreachable upstream route",
+      "exit_codes": {
+        "check_network": 1
+      },
+      "name": "Network Timeout",
+      "overrides": {
+        "check_network": "check_network"
+      }
+    },
+    "nginx_down": {
+      "description": "Nginx configuration failure prevents service startup",
+      "exit_codes": {
+        "check_service": 3
+      },
+      "name": "Nginx Down",
+      "overrides": {
+        "check_service": "check_service"
+      }
+    },
+    "oracle_slow": {
+      "description": "Oracle listener is up but database processes are overloaded",
+      "exit_codes": {},
+      "name": "Oracle Slow",
+      "overrides": {
+        "check_process": "check_process"
+      }
+    },
+    "redis_down": {
+      "description": "Redis service failed after repeated restarts",
+      "exit_codes": {
+        "check_service": 3
+      },
+      "name": "Redis Down",
+      "overrides": {
+        "check_service": "check_service"
+      }
+    }
+  }
+}

@@ -1,0 +1,5 @@
+Status  Name              DisplayName
+------  ----              -----------
+Running ERPWorker         ERP Integration Worker
+Running MSSQLSERVER       SQL Server
+Running WinRM             Windows Remote Management

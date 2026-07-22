@@ -1,0 +1,8 @@
+× nginx.service - A high performance web server and a reverse proxy server
+     Loaded: loaded (/lib/systemd/system/nginx.service; enabled; preset: enabled)
+     Active: failed (Result: exit-code) since Tue 2026-07-21 15:36:07 +07; 11min ago
+    Process: 29642 ExecStartPre=/usr/sbin/nginx -t -q -g daemon on; master_process on; (code=exited, status=1/FAILURE)
+
+Jul 21 15:36:07 crm-nginx-01 nginx[29642]: nginx: [emerg] host not found in upstream "crm-api.internal" in /etc/nginx/conf.d/crm.conf:18
+Jul 21 15:36:07 crm-nginx-01 nginx[29642]: nginx: configuration file /etc/nginx/nginx.conf test failed
+Jul 21 15:36:07 crm-nginx-01 systemd[1]: nginx.service: Failed with result 'exit-code'.

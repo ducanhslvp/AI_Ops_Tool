@@ -1,0 +1,5 @@
+NAMESPACE NAME                              READY UP-TO-DATE AVAILABLE AGE CONTAINERS IMAGES
+crm       deployment.apps/crm-api           3/3   3          3         90d crm-api    registry.local/crm-api:4.2
+crm       service/crm-api                    ClusterIP 10.96.31.40 <none> 8080/TCP 90d
+crm       ingress.networking.k8s.io/crm-web  nginx crm.internal 10.30.1.20 80,443 90d
+crm       pod/crm-api-6db8fd9d7c-kq2hf       1/1 Running 0 3d 10.244.2.18 worker-02

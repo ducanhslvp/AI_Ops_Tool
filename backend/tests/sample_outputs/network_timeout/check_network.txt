@@ -1,0 +1,8 @@
+2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 state UP
+    inet 10.20.10.21/24 brd 10.20.10.255 scope global eth0
+    RX: bytes  packets  errors  dropped  missed  mcast
+        9823112  88214    1842    917      0       41
+    TX: bytes  packets  errors  dropped  carrier collsns
+        4412811  45112    0       228      14      0
+RTNETLINK answers: Network is unreachable for 10.20.40.0/24 via 10.20.10.1
+tcp SYN-SENT 0 1 10.20.10.21:51242 10.20.40.18:1521 users:(("java",pid=1842,fd=92))

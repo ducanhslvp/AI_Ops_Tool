@@ -1,0 +1,5 @@
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/sda2        98G   97G  420M 100% /
+/dev/sdb1       492G  451G   16G  97% /srv/data
+tmpfs           3.9G  8.0M  3.9G   1% /dev/shm
+overlay          98G   97G  420M 100% /var/lib/docker/overlay2/4f9a/merged

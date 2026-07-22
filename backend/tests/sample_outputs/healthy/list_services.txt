@@ -1,0 +1,7 @@
+nginx.service              loaded active running A high performance web server
+redis-server.service       loaded active running Advanced key-value store
+erp-api.service            loaded active running Internal ERP API
+kafka.service              loaded active running Apache Kafka broker
+ssh.service                loaded active running OpenBSD Secure Shell server
+systemd-journald.service   loaded active running Journal Service
+cron.service               loaded active running Regular background program processing daemon

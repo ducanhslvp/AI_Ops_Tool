@@ -1,0 +1,5 @@
+2026-07-21 15:45:10 INFO  group=erp-order-sync topic=orders partition=0 current_offset=128841 high_watermark=142991 lag=14150
+2026-07-21 15:45:10 INFO  group=erp-order-sync topic=orders partition=1 current_offset=130124 high_watermark=145804 lag=15680
+2026-07-21 15:45:11 WARN  consumer=erp-order-sync processing_time_ms=8421 exceeds_max_poll_interval_risk=true
+2026-07-21 15:45:12 WARN  broker=3 request=Fetch response_time_ms=2142 queue_time_ms=1804
+2026-07-21 15:45:14 INFO  group=erp-order-sync total_lag=29830 trend=INCREASING

@@ -1,0 +1,5 @@
+NAME                                  READY   STATUS    RESTARTS   AGE
+erp-api-7f548fd6cd-4kpx9              1/1     Running   0          3d
+erp-api-7f548fd6cd-vm8r2              1/1     Running   0          3d
+erp-worker-65b794b8d9-qz7mn           1/1     Running   1          6d
+redis-sentinel-0                      1/1     Running   0          18d

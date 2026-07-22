@@ -1,0 +1,9 @@
+IPAddress         InterfaceAlias PrefixLength AddressState
+---------         -------------- ------------ ------------
+10.20.20.31       Ethernet0      24           Preferred
+127.0.0.1         Loopback       8            Preferred
+
+LocalAddress LocalPort RemoteAddress RemotePort State
+------------ --------- ------------- ---------- -----
+0.0.0.0      443       0.0.0.0       0          Listen
+10.20.20.31  49722     10.20.30.15    1433       Established

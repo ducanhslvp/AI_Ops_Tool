@@ -1,0 +1,5 @@
+2026-07-21T15:40:02+07:00 INFO  request_id=7f9a2 route=/api/orders status=200 duration_ms=84
+2026-07-21T15:40:04+07:00 INFO  request_id=7f9a3 route=/api/inventory status=200 duration_ms=61
+2026-07-21T15:40:05+07:00 INFO  pool=primary active=8 idle=24 waiting=0
+2026-07-21T15:40:08+07:00 INFO  request_id=7f9a4 route=/health status=200 duration_ms=2
+2026-07-21T15:40:10+07:00 INFO  consumer=erp-events partition=3 offset=928812 lag=4

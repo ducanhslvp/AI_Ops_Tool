@@ -1,0 +1,8 @@
+Linux erp-linux-01 6.8.0-63-generic #66-Ubuntu SMP PREEMPT_DYNAMIC x86_64 GNU/Linux
+PRETTY_NAME="Ubuntu 24.04.2 LTS"
+NAME="Ubuntu"
+VERSION_ID="24.04"
+VERSION_CODENAME=noble
+ 15:42:18 up 37 days,  6:14,  2 users,  load average: 0.42, 0.51, 0.47
+erp-linux-01
+aiops-runner

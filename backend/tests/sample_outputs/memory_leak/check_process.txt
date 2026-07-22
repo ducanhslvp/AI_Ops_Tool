@@ -1,0 +1,4 @@
+USER         PID %CPU %MEM     VSZ     RSS TTY      STAT START   TIME COMMAND
+app         1842 18.2 88.4 12844320 7198840 ?      Ssl  Jul13 892:18 /usr/bin/java -Xmx12g -jar erp-api.jar
+postgres     944  2.1  2.8   611228  228412 ?      Ss   Jul13  72:44 postgres: writer
+redis       1027  0.7  0.4   174228   29840 ?      Ssl  Jul13  31:06 /usr/bin/redis-server

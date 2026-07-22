@@ -1,0 +1,4 @@
+USER         PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
+app        28491 187.4  7.5 2488312 610224 ?      Rl   14:58  48:22 /usr/bin/java -jar pricing-worker.jar
+app        28504  96.2  2.8 1128420 228332 ?      Rl   15:25  22:06 node reconciliation.js
+app         1842  24.8  2.3 1643280 186432 ?      Ssl  Jul13 102:18 /usr/bin/java -jar erp-api.jar

@@ -1,0 +1,4 @@
+WindowsProductName : Windows Server 2022 Datacenter
+WindowsVersion     : 21H2
+OsArchitecture    : 64-bit
+CsName             : CRM-WINDOWS-01
