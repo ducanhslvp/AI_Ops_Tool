@@ -8,9 +8,16 @@ from app.services.policy_engine import PolicyContext, PolicyEngine
 from app.services.tool_registry import ToolRegistry
 
 
-def test_only_raw_ssh_command_is_exposed_to_ai() -> None:
+def test_only_controlled_ssh_gateway_tools_are_exposed_to_ai() -> None:
     registry = ToolRegistry()
-    assert [tool.name for tool in registry.all()] == ["run_ssh_command"]
+    assert [tool.name for tool in registry.all()] == [
+        "run_ssh_command",
+        "read_remote_file",
+        "write_remote_file",
+        "create_remote_directory",
+        "move_remote_file",
+        "delete_remote_file",
+    ]
     assert registry.get("check_disk").name == "check_disk"
 
 
@@ -24,6 +31,59 @@ def test_registry_renders_only_registered_action() -> None:
     registry = ToolRegistry()
     command = registry.render_command("check_service", "Ubuntu 24.04", {"service": "nginx"})
     assert command == "systemctl status nginx --no-pager"
+
+
+def test_registry_builds_structured_remote_file_write() -> None:
+    command = ToolRegistry().render_command(
+        "write_remote_file",
+        "Ubuntu 24.04",
+        {"path": "/opt/acme/app.conf", "content": "enabled=true\n", "mode": "replace"},
+    )
+    assert command.startswith("python3 -c ")
+    assert "/opt/acme/app.conf" in command
+    assert "enabled=true" not in command
+
+
+@pytest.mark.parametrize(
+    ("action", "arguments", "marker"),
+    [
+        ("read_remote_file", {"path": "/var/log/app.log", "max_bytes": 4096},
+         "read_bytes"),
+        ("create_remote_directory", {"path": "/opt/acme/releases"}, ".mkdir("),
+        ("move_remote_file", {
+            "source_path": "/opt/acme/app.conf",
+            "destination_path": "/opt/acme/app.conf.bak",
+            "overwrite": False,
+        }, ".replace("),
+        ("delete_remote_file", {"path": "/opt/acme/app.conf.bak"}, ".unlink("),
+    ],
+)
+def test_registry_builds_structured_remote_file_operations(
+    action: str, arguments: dict, marker: str
+) -> None:
+    command = ToolRegistry().render_command(action, "Ubuntu 24.04", arguments)
+    assert command.startswith("python3 -c ")
+    assert marker in command
+
+
+@pytest.mark.parametrize(
+    "path", ["/home/deploy/.ssh/id_rsa", "/home/app/.env", "/opt/../etc/shadow"]
+)
+def test_registry_protects_secret_paths(path: str) -> None:
+    with pytest.raises(Exception):
+        ToolRegistry().render_command(
+            "read_remote_file", "Ubuntu", {"path": path, "max_bytes": 1024}
+        )
+
+
+@pytest.mark.parametrize("path", ["/etc/shadow", "/tmp/out", "/opt/../etc/passwd"])
+def test_registry_rejects_remote_file_paths_outside_configured_roots(path: str) -> None:
+    with pytest.raises(Exception):
+        ToolRegistry().render_command(
+            "write_remote_file",
+            "Ubuntu",
+            {"path": path, "content": "data", "mode": "replace"},
+        )
 
 
 @pytest.mark.asyncio

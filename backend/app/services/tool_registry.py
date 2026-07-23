@@ -1,4 +1,6 @@
 from dataclasses import dataclass
+import base64
+from pathlib import PurePosixPath
 import re
 import shlex
 from typing import Any
@@ -27,7 +29,14 @@ class ToolDescriptorInternal:
 
 
 class ToolRegistry:
-    _public_tool_names = ("run_ssh_command",)
+    _public_tool_names = (
+        "run_ssh_command",
+        "read_remote_file",
+        "write_remote_file",
+        "create_remote_directory",
+        "move_remote_file",
+        "delete_remote_file",
+    )
 
     def __init__(self) -> None:
         self._tools: dict[str, ToolDescriptorInternal] = {}
@@ -55,6 +64,16 @@ class ToolRegistry:
             if unexpected or not isinstance(arguments.get("command"), str):
                 raise AppError("run_ssh_command requires only a string command", 422)
             return SshCommandGuard().validate(arguments["command"], os_name).command
+        if name == "write_remote_file":
+            return self._render_file_write(os_name, arguments)
+        if name == "read_remote_file":
+            return self._render_file_read(os_name, arguments)
+        if name == "create_remote_directory":
+            return self._render_directory_create(os_name, arguments)
+        if name == "move_remote_file":
+            return self._render_file_move(os_name, arguments)
+        if name == "delete_remote_file":
+            return self._render_file_delete(os_name, arguments)
         template = self._select_template(tool.command_template, os_name)
         if template is None:
             raise AppError(f"Action {name} is not supported for OS/target {os_name}", 400)
@@ -64,6 +83,150 @@ class ToolRegistry:
     def supports_target(self, tool: ToolDescriptorInternal, server_type: str, os_name: str) -> bool:
         normalized_os = "windows" if "win" in os_name.lower() else "linux"
         return server_type.lower() in tool.target_types or normalized_os in tool.target_types
+
+    @staticmethod
+    def _render_file_write(os_name: str, arguments: dict[str, Any]) -> str:
+        from app.core.config import get_settings
+
+        ToolRegistry._require_linux_file_target(os_name)
+        if set(arguments) != {"path", "content", "mode"}:
+            raise AppError("write_remote_file requires path, content and mode", 422)
+        path = arguments["path"]
+        content = arguments["content"]
+        mode = arguments["mode"]
+        if not isinstance(path, str) or not isinstance(content, str):
+            raise AppError("Remote file path and content must be strings", 422)
+        if mode not in {"replace", "append"}:
+            raise AppError("Remote file mode must be replace or append", 422)
+        settings = get_settings()
+        encoded = content.encode("utf-8")
+        if len(encoded) > settings.ssh_file_write_max_bytes:
+            raise AppError("Remote file content exceeds the configured gateway limit", 422)
+        normalized = ToolRegistry._validate_remote_path(
+            path, settings.ssh_file_write_allowed_roots, "writable"
+        )
+        payload = base64.b64encode(encoded).decode("ascii")
+        python_mode = "ab" if mode == "append" else "wb"
+        script = (
+            "import base64,pathlib,sys;"
+            "p=pathlib.Path(sys.argv[1]);p.parent.mkdir(parents=True,exist_ok=True);"
+            f"p.open('{python_mode}').write(base64.b64decode(sys.argv[2]))"
+        )
+        return shlex.join(("python3", "-c", script, normalized, payload))
+
+    @staticmethod
+    def _render_file_read(os_name: str, arguments: dict[str, Any]) -> str:
+        from app.core.config import get_settings
+
+        ToolRegistry._require_linux_file_target(os_name)
+        if set(arguments) - {"path", "max_bytes"} or "path" not in arguments:
+            raise AppError("read_remote_file requires path and optional max_bytes", 422)
+        settings = get_settings()
+        path = ToolRegistry._validate_remote_path(
+            arguments["path"], settings.ssh_file_read_allowed_roots, "readable"
+        )
+        max_bytes = arguments.get("max_bytes", settings.ssh_file_read_max_bytes)
+        if not isinstance(max_bytes, int) or not 1 <= max_bytes <= settings.ssh_file_read_max_bytes:
+            raise AppError("Remote file read size exceeds the configured gateway limit", 422)
+        script = (
+            "import pathlib,sys;"
+            "p=pathlib.Path(sys.argv[1]);"
+            "data=p.read_bytes();sys.stdout.buffer.write(data[:int(sys.argv[2])])"
+        )
+        return shlex.join(("python3", "-c", script, path, str(max_bytes)))
+
+    @staticmethod
+    def _render_directory_create(os_name: str, arguments: dict[str, Any]) -> str:
+        from app.core.config import get_settings
+
+        ToolRegistry._require_linux_file_target(os_name)
+        if set(arguments) != {"path"}:
+            raise AppError("create_remote_directory requires only path", 422)
+        path = ToolRegistry._validate_remote_path(
+            arguments["path"], get_settings().ssh_file_write_allowed_roots, "writable"
+        )
+        script = "import pathlib,sys;pathlib.Path(sys.argv[1]).mkdir(parents=True,exist_ok=True)"
+        return shlex.join(("python3", "-c", script, path))
+
+    @staticmethod
+    def _render_file_move(os_name: str, arguments: dict[str, Any]) -> str:
+        from app.core.config import get_settings
+
+        ToolRegistry._require_linux_file_target(os_name)
+        if set(arguments) != {"source_path", "destination_path", "overwrite"}:
+            raise AppError(
+                "move_remote_file requires source_path, destination_path and overwrite", 422
+            )
+        if not isinstance(arguments["overwrite"], bool):
+            raise AppError("Remote file overwrite must be a boolean", 422)
+        roots = get_settings().ssh_file_write_allowed_roots
+        source = ToolRegistry._validate_remote_path(
+            arguments["source_path"], roots, "writable"
+        )
+        destination = ToolRegistry._validate_remote_path(
+            arguments["destination_path"], roots, "writable"
+        )
+        script = (
+            "import pathlib,sys;"
+            "src=pathlib.Path(sys.argv[1]);dst=pathlib.Path(sys.argv[2]);"
+            "overwrite=sys.argv[3]=='1';"
+            "dst.parent.mkdir(parents=True,exist_ok=True);"
+            "(_ for _ in ()).throw(FileExistsError(str(dst))) "
+            "if dst.exists() and not overwrite else src.replace(dst)"
+        )
+        return shlex.join(
+            ("python3", "-c", script, source, destination,
+             "1" if arguments["overwrite"] else "0")
+        )
+
+    @staticmethod
+    def _render_file_delete(os_name: str, arguments: dict[str, Any]) -> str:
+        from app.core.config import get_settings
+
+        ToolRegistry._require_linux_file_target(os_name)
+        if set(arguments) != {"path"}:
+            raise AppError("delete_remote_file requires only path", 422)
+        path = ToolRegistry._validate_remote_path(
+            arguments["path"], get_settings().ssh_file_write_allowed_roots, "writable"
+        )
+        script = (
+            "import pathlib,sys;"
+            "p=pathlib.Path(sys.argv[1]);"
+            "(_ for _ in ()).throw(IsADirectoryError(str(p))) if p.is_dir() else p.unlink()"
+        )
+        return shlex.join(("python3", "-c", script, path))
+
+    @staticmethod
+    def _require_linux_file_target(os_name: str) -> None:
+        if "win" in os_name.casefold():
+            raise AppError(
+                "Structured remote file operations are not available for Windows", 422
+            )
+
+    @staticmethod
+    def _validate_remote_path(path: object, roots: list[str], purpose: str) -> str:
+        if not isinstance(path, str):
+            raise AppError("Remote file path must be a string", 422)
+        parsed = PurePosixPath(path)
+        normalized = str(parsed)
+        if not path.startswith("/") or ".." in parsed.parts:
+            raise AppError("Remote file path must be absolute and cannot traverse parents", 403)
+        forbidden_parts = {".ssh", ".gnupg", ".aws", ".azure", ".kube"}
+        forbidden_names = {
+            ".env", "id_rsa", "id_ed25519", "authorized_keys",
+            "shadow", "gshadow", "sudoers",
+        }
+        lowered_parts = {part.casefold() for part in parsed.parts}
+        if lowered_parts & forbidden_parts or parsed.name.casefold() in forbidden_names:
+            raise AppError("Remote file path is protected by the Secret Isolation policy", 403)
+        if not any(
+            normalized == root or normalized.startswith(f"{root}/")
+            for root in roots
+        ):
+            raise AppError(
+                f"Remote file path is outside the configured {purpose} roots", 403
+            )
+        return normalized
 
     def _add(self, tool: ToolDescriptorInternal) -> None:
         self._tools[tool.name] = tool
@@ -80,6 +243,89 @@ class ToolRegistry:
                 target_types=("linux", "windows", "database", "docker", "kubernetes"),
                 arguments_schema={"command": {"type": "string", "minLength": 1,
                                                 "maxLength": 512}},
+                command_template=CommandTemplate(),
+            )
+        )
+        self._add(
+            ToolDescriptorInternal(
+                name="read_remote_file",
+                plugin="ssh.file_operations",
+                description=(
+                    "Read a bounded text or configuration file through the SSH Gateway. "
+                    "Protected secret locations are always denied."
+                ),
+                risk_level="medium",
+                target_types=("linux", "database", "docker", "kubernetes"),
+                arguments_schema={
+                    "path": {"type": "string", "minLength": 2, "maxLength": 1024},
+                    "max_bytes": {"type": "integer", "minimum": 1, "maximum": 2097152},
+                },
+                command_template=CommandTemplate(),
+            )
+        )
+        self._add(
+            ToolDescriptorInternal(
+                name="write_remote_file",
+                plugin="ssh.file_operations",
+                description=(
+                    "Create, replace or append a text file through the SSH Gateway. "
+                    "Writable roots and content size are backend-controlled; Policy, "
+                    "Permission, Approval and Audit remain enforced."
+                ),
+                risk_level="high",
+                target_types=("linux", "database", "docker", "kubernetes"),
+                arguments_schema={
+                    "path": {"type": "string", "minLength": 2, "maxLength": 1024},
+                    "content": {"type": "string"},
+                    "mode": {"type": "string", "enum": ["replace", "append"]},
+                },
+                command_template=CommandTemplate(),
+            )
+        )
+        self._add(
+            ToolDescriptorInternal(
+                name="create_remote_directory",
+                plugin="ssh.file_operations",
+                description="Create an approved directory inside a configured writable root.",
+                risk_level="high",
+                target_types=("linux", "database", "docker", "kubernetes"),
+                arguments_schema={
+                    "path": {"type": "string", "minLength": 2, "maxLength": 1024},
+                },
+                command_template=CommandTemplate(),
+            )
+        )
+        self._add(
+            ToolDescriptorInternal(
+                name="move_remote_file",
+                plugin="ssh.file_operations",
+                description=(
+                    "Move or rename one approved file without leaving configured writable roots."
+                ),
+                risk_level="high",
+                target_types=("linux", "database", "docker", "kubernetes"),
+                arguments_schema={
+                    "source_path": {"type": "string", "minLength": 2, "maxLength": 1024},
+                    "destination_path": {
+                        "type": "string", "minLength": 2, "maxLength": 1024
+                    },
+                    "overwrite": {"type": "boolean"},
+                },
+                command_template=CommandTemplate(),
+            )
+        )
+        self._add(
+            ToolDescriptorInternal(
+                name="delete_remote_file",
+                plugin="ssh.file_operations",
+                description=(
+                    "Delete one approved file. Directory and recursive deletion are never allowed."
+                ),
+                risk_level="critical",
+                target_types=("linux", "database", "docker", "kubernetes"),
+                arguments_schema={
+                    "path": {"type": "string", "minLength": 2, "maxLength": 1024},
+                },
                 command_template=CommandTemplate(),
             )
         )

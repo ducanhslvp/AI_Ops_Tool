@@ -72,6 +72,9 @@ class System(Base, IdMixin, TimestampMixin):
     owner: Mapped[str] = mapped_column(String(120), default="")
     description: Mapped[str] = mapped_column(Text, default="")
     criticality: Mapped[str] = mapped_column(String(40), default="medium")
+    default_credential_id: Mapped[str | None] = mapped_column(
+        ForeignKey("credentials.id"), nullable=True, index=True
+    )
 
 
 class Credential(Base, IdMixin, TimestampMixin):
@@ -305,6 +308,7 @@ class AiSession(Base, IdMixin, TimestampMixin):
     reasoning_effort: Mapped[str] = mapped_column(String(20), default="medium")
     include_full_memory: Mapped[bool] = mapped_column(Boolean, default=False)
     accept_all_commands: Mapped[bool] = mapped_column(Boolean, default=False)
+    bypass_policy: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class AiMessage(Base, IdMixin, TimestampMixin):
@@ -325,11 +329,21 @@ class AiCommandApproval(Base, IdMixin, TimestampMixin):
     ),)
 
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
-    system_id: Mapped[str] = mapped_column(ForeignKey("systems.id"), index=True)
-    server_id: Mapped[str] = mapped_column(ForeignKey("servers.id"), index=True)
+    system_id: Mapped[str | None] = mapped_column(
+        ForeignKey("systems.id"), nullable=True, index=True
+    )
+    server_id: Mapped[str | None] = mapped_column(
+        ForeignKey("servers.id"), nullable=True, index=True
+    )
     command_hash: Mapped[str] = mapped_column(String(64), index=True)
     command: Mapped[str] = mapped_column(Text)
+    effect: Mapped[str] = mapped_column(String(40), default="approval_required", index=True)
+    description: Mapped[str] = mapped_column(String(255), default="")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    use_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
 
 
 class AiMemory(Base, IdMixin, TimestampMixin):

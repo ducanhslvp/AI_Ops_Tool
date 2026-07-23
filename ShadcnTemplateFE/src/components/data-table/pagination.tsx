@@ -7,6 +7,7 @@ import {
 import { type Table } from '@tanstack/react-table'
 import { cn, getPageNumbers } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
+import { ROWS_PER_PAGE_OPTIONS } from '@/lib/pagination'
 import {
   Select,
   SelectContent,
@@ -57,7 +58,7 @@ export function DataTablePagination<TData>({
               <SelectValue placeholder={`${pageSize}`} />
             </SelectTrigger>
             <SelectContent side='top'>
-              {[10, 25, 50, 100].map((pageSize) => (
+              {ROWS_PER_PAGE_OPTIONS.map((pageSize) => (
                 <SelectItem key={pageSize} value={`${pageSize}`}>
                   {pageSize}
                 </SelectItem>

@@ -26,6 +26,7 @@ class SystemCreate(BaseModel):
     owner: str = ""
     description: str = ""
     criticality: str = "medium"
+    default_credential_id: str | None = None
 
 
 class SystemOut(Timestamped):
@@ -34,6 +35,7 @@ class SystemOut(Timestamped):
     owner: str
     description: str
     criticality: str
+    default_credential_id: str | None
 
 
 class ServerCreate(BaseModel):
@@ -92,7 +94,7 @@ class CredentialCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=2, max_length=120)
-    system_id: str
+    system_id: str | None = None
     secret_payload: dict[str, str]
     metadata_json: dict[str, Any] = Field(default_factory=dict)
 
@@ -120,7 +122,7 @@ class CredentialOut(Timestamped):
 class CredentialUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=2, max_length=120)
-    system_id: str
+    system_id: str | None = None
     username: str = Field(min_length=1, max_length=120)
     secret_payload: dict[str, str] | None = None
     metadata_json: dict[str, Any] = Field(default_factory=dict)

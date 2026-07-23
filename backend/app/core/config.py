@@ -27,10 +27,20 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 120
     rate_limit_max_clients: int = 10_000
     trust_proxy_headers: bool = False
+    rows_per_page: int = Field(default=100, ge=100, le=1000)
+    audit_ssh_output_max_chars: int = Field(default=500, ge=100, le=10_000)
 
     ssh_connect_timeout_seconds: int = 10
     ssh_command_timeout_seconds: int = 30
     ssh_output_limit_bytes: int = 1024 * 1024
+    ssh_file_write_max_bytes: int = Field(default=262_144, ge=1_024, le=2_097_152)
+    ssh_file_read_max_bytes: int = Field(default=262_144, ge=1_024, le=2_097_152)
+    ssh_file_write_allowed_roots: Annotated[list[str], NoDecode] = [
+        "/opt", "/srv", "/var/www", "/home"
+    ]
+    ssh_file_read_allowed_roots: Annotated[list[str], NoDecode] = [
+        "/opt", "/srv", "/var/www", "/home", "/var/log"
+    ]
     ssh_max_attempts: int = 2
     ssh_known_hosts_file: str = "~/.ssh/known_hosts"
     ssh_transport: Literal["ssh", "local_simulation"] = "local_simulation"
@@ -53,6 +63,15 @@ class Settings(BaseSettings):
     def parse_cors_origins(cls, value: str | list[str]) -> list[str]:
         if isinstance(value, str):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
+        return value
+
+    @field_validator(
+        "ssh_file_write_allowed_roots", "ssh_file_read_allowed_roots", mode="before"
+    )
+    @classmethod
+    def parse_file_write_roots(cls, value: str | list[str]) -> list[str]:
+        if isinstance(value, str):
+            return [root.strip().rstrip("/") for root in value.split(",") if root.strip()]
         return value
 
     @model_validator(mode="after")

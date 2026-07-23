@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowDown, ArrowUp, ArrowUpDown, Columns3, MoreHorizontal, Search, Trash2, type LucideIcon } from 'lucide-react'
 import {
   type ColumnDef, type ColumnSizingState, type PaginationState, type Row, type SortingState, type VisibilityState,
@@ -16,6 +16,7 @@ import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { DataTablePagination } from '@/components/data-table'
 import { DataTableBulkActions } from '@/components/data-table/bulk-actions'
+import { DEFAULT_ROWS_PER_PAGE } from '@/lib/pagination'
 
 export type EnterpriseColumn<T> = {
   id: string
@@ -60,12 +61,14 @@ type EnterpriseDataTableProps<T> = {
   entityName?: string
   className?: string
   rowPreview?: (record: T) => React.ReactNode
+  rowPreviewDelayMs?: number
 }
 
 export function EnterpriseDataTable<T>({ data, columns, getRowId, loading = false,
   searchPlaceholder = 'Search loaded data', filterSlot, rowActions = [], bulkActions = [],
   emptyTitle = 'No matching records', emptyDescription = 'Adjust search or filters to view records.',
-  initialPageSize = 25, entityName = 'row', className, rowPreview }: EnterpriseDataTableProps<T>) {
+  initialPageSize = DEFAULT_ROWS_PER_PAGE, entityName = 'row', className, rowPreview,
+  rowPreviewDelayMs = 0 }: EnterpriseDataTableProps<T>) {
   const [sorting, setSorting] = useState<SortingState>([])
   const [visibility, setVisibility] = useState<VisibilityState>({})
   const [sizing, setSizing] = useState<ColumnSizingState>({})
@@ -74,6 +77,10 @@ export function EnterpriseDataTable<T>({ data, columns, getRowId, loading = fals
   const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: initialPageSize })
   const [context, setContext] = useState<{ row: Row<T>; x: number; y: number }>()
   const [preview, setPreview] = useState<{ record: T; x: number; y: number }>()
+  const previewTimerRef = useRef<number | undefined>(undefined)
+  useEffect(() => () => {
+    if (previewTimerRef.current) window.clearTimeout(previewTimerRef.current)
+  }, [])
   const definitions = useMemo<ColumnDef<T>[]>(() => [
     {
       id: 'select', size: 42, minSize: 42, maxSize: 42, enableSorting: false, enableHiding: false,
@@ -124,8 +131,17 @@ export function EnterpriseDataTable<T>({ data, columns, getRowId, loading = fals
             className={cn('absolute right-0 top-0 h-full w-1 cursor-col-resize touch-none select-none hover:bg-primary/40', header.column.getIsResizing() && 'bg-primary')} />}</th>)}</tr>)}</thead>
         <tbody>{loading ? <LoadingRows columns={table.getVisibleLeafColumns().length} /> : table.getRowModel().rows.length ? table.getRowModel().rows.map((row) => <tr key={row.id}
           data-state={row.getIsSelected() ? 'selected' : undefined} onContextMenu={(event) => { if (!rowActions.length) return; event.preventDefault(); setContext({ row, x: event.clientX, y: event.clientY }) }}
-          onMouseEnter={(event) => { if (!rowPreview) return; const rect = event.currentTarget.getBoundingClientRect(); setPreview({ record: row.original, x: Math.min(rect.left + 48, window.innerWidth - 440), y: Math.min(rect.bottom + 6, window.innerHeight - 260) }) }}
-          onMouseLeave={() => setPreview(undefined)}
+          onMouseEnter={(event) => {
+            if (!rowPreview) return
+            if (previewTimerRef.current) window.clearTimeout(previewTimerRef.current)
+            const rect = event.currentTarget.getBoundingClientRect()
+            const next = { record: row.original, x: Math.min(rect.left + 48, window.innerWidth - 440), y: Math.min(rect.bottom + 6, window.innerHeight - 260) }
+            previewTimerRef.current = window.setTimeout(() => setPreview(next), rowPreviewDelayMs)
+          }}
+          onMouseLeave={() => {
+            if (previewTimerRef.current) window.clearTimeout(previewTimerRef.current)
+            setPreview(undefined)
+          }}
           className='group/row border-b transition-colors hover:bg-muted/50 data-[state=selected]:bg-muted'>{row.getVisibleCells().map((cell) => { const meta = cell.column.columnDef.meta as { className?: string; wrap?: boolean } | undefined
             const value = cell.getValue(); const title = typeof value === 'string' || typeof value === 'number' ? String(value) : undefined
             return <td key={cell.id} style={{ width: cell.column.getSize() }} title={title}

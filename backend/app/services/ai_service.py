@@ -86,13 +86,14 @@ class AiService:
                                               "workspace_revision": context.revision})
         effective_tools = await list_effective_tools(self.session, self.registry)
         definitions = list(tool_definitions(self.registry, effective_tools))
+        ai_tool_names = {tool.name for tool in self.registry.all()}
         if server is None:
             scoped_definitions = []
             target_description = "; ".join(
                 f"{item.id}={item.hostname} ({item.ip_address})" for item in target_servers
             )
             for definition in definitions:
-                if definition.name != "run_ssh_command":
+                if definition.name not in ai_tool_names:
                     scoped_definitions.append(definition)
                     continue
                 parameters = dict(definition.parameters)
@@ -102,7 +103,9 @@ class AiService:
                     "description": f"Server in the selected System: {target_description}",
                 }
                 parameters["properties"] = properties
-                parameters["required"] = ["command", "server_id"]
+                parameters["required"] = [
+                    *list(parameters.get("required", [])), "server_id"
+                ]
                 scoped_definitions.append(definition.model_copy(update={"parameters": parameters}))
             definitions = scoped_definitions
         request = ChatRequest(
@@ -128,9 +131,9 @@ class AiService:
             })
 
         async def execute(call: ToolCall) -> dict:
-            if call.name != "run_ssh_command":
+            if call.name not in ai_tool_names:
                 return {"action": call.name, "decision": "rejected",
-                        "error": "AI may call only run_ssh_command"}
+                        "error": "AI may call only controlled SSH Gateway tools"}
             arguments = dict(call.arguments)
             target_server = server
             if target_server is None:
@@ -143,6 +146,7 @@ class AiService:
                     user=user, server=target_server, action=call.name, arguments=arguments,
                     reason=f"AI-assisted operation requested by {user.email}",
                     session_id=ai_session.id,
+                    bypass_policy=ai_session.bypass_policy,
                 )
             except ApprovalRequired as exc:
                 approval = await self.session.get(ApprovalRequest, exc.approval_id)

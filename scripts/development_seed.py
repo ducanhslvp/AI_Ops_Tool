@@ -45,7 +45,8 @@ logger = logging.getLogger("development_seed")
 
 PERMISSIONS = [
     "*", "inventory:read", "inventory:write", "tool:execute", "ai:chat",
-    "policy:read", "policy:write", "approval:decide", "audit:read",
+    "policy:read", "policy:write", "approval:decide", "ai:policy_bypass", "audit:read",
+    "audit:delete",
     "secret:read_metadata", "secret:write", "report:read", "report:write",
 ]
 
@@ -66,7 +67,8 @@ async def _security(session) -> dict[str, User]:
     role_specs = {
         "Admin": PERMISSIONS,
         "Operator": ["inventory:read", "inventory:write", "tool:execute", "ai:chat",
-                     "policy:read", "approval:decide", "audit:read", "report:read",
+                     "policy:read", "approval:decide", "ai:policy_bypass",
+                     "audit:read", "report:read",
                      "report:write"],
         "Viewer": ["inventory:read", "policy:read", "audit:read", "report:read"],
     }

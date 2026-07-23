@@ -44,6 +44,27 @@ class ToolExecutionResponse(BaseModel):
     confidence: dict[str, Any]
 
 
+class MultiServerExecutionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    system_id: str
+    command: str = Field(min_length=1, max_length=512)
+    workers: int = Field(default=10, ge=1, le=32)
+    reason: str = Field(default="Human operator requested a multi-server command",
+                        min_length=5, max_length=1000)
+
+
+class MultiServerExecutionResult(BaseModel):
+    server_id: str
+    hostname: str
+    ip_address: str
+    status: str
+    decision: str
+    exit_code: int | None = None
+    output: str = ""
+    duration_ms: int = 0
+    approval_id: str | None = None
+
+
 class PolicyRuleOut(Timestamped):
     name: str
     description: str
@@ -95,6 +116,20 @@ class ApprovalOut(Timestamped):
     decided_at: datetime | None
 
 
+class ApprovalWrite(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    server_id: str | None = None
+    action: str = Field(min_length=2, max_length=120)
+    reason: str = Field(min_length=3, max_length=4000)
+    impact: str = Field(default="", max_length=4000)
+    plan: dict[str, Any] = Field(default_factory=dict)
+
+
+class ApprovalBulkRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    ids: list[str] = Field(min_length=1, max_length=200)
+
+
 class ApprovalDecisionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     decision: str = Field(pattern="^(approved|rejected)$")
@@ -139,6 +174,12 @@ class AiSessionUpdate(BaseModel):
     model: str | None = Field(default=None, max_length=160)
     reasoning_effort: Literal["low", "medium", "high", "xhigh", "max", "ultra"] | None = None
     include_full_memory: bool | None = None
+    bypass_policy: bool | None = None
+
+
+class AiSessionBypassRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool
 
 
 class AiProviderSwitchRequest(BaseModel):

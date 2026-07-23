@@ -199,34 +199,29 @@ class CodexProvider(BaseProvider):
             )
             return (
                 "BACKEND TOOL RESULT\n" + results
-                + "\nContinue the current task. Request run_ssh_command again only when more "
-                  "read-only infrastructure evidence is required."
+                + "\nContinue the current task. Request another registered backend tool only "
+                  "when more infrastructure evidence or an approved operation is required."
             )
 
         transcript = "\n".join(f"{message.role}: {message.content}"
                                for message in request.messages)
-        if resumed and not bootstrap:
-            contract = json.dumps(
-                request.tools[0].parameters if request.tools else {},
-                ensure_ascii=True, separators=(",", ":"),
-            )
-            return (
-                "Continue the existing AIOps thread. The backend safety contract is unchanged. "
-                f"The only available infrastructure tool is run_ssh_command with schema {contract}; "
-                "never execute SSH directly.\n\nCURRENT TASK CONTEXT\n" + transcript
-            )
-
         tools = [{"name": tool.name, "description": tool.description,
                   "parameters": tool.parameters} for tool in request.tools]
         registry = json.dumps(tools, ensure_ascii=True, separators=(",", ":"))
+        if resumed and not bootstrap:
+            return (
+                "Continue the existing AIOps thread. The backend safety contract is unchanged. "
+                f"Available backend tools: {registry}. "
+                "never execute SSH directly.\n\nCURRENT TASK CONTEXT\n" + transcript
+            )
+
         return (
             "You are the reasoning coordinator for an enterprise AIOps backend. You never execute "
             "SSH commands, open network connections, access files outside the isolated read-only "
-            "workspace, or request credentials. You may propose one read-only SSH command per tool "
-            "call through "
-            "run_ssh_command; the backend validates, authorizes, executes and audits it. Never invent "
-            "another tool name. You may call it repeatedly when multiple targets or evidence steps "
-            "are required. Return "
+            "workspace, or request credentials. Use only tools in the backend registry. The backend "
+            "validates, authorizes, executes and audits every operation. Never invent another tool "
+            "name or execute SSH directly. You may call registered tools repeatedly across targets "
+            "when evidence or an approved change requires it. Return "
             "no tool calls when evidence is sufficient. Encode each tool's arguments as a JSON "
             "object string in arguments_json.\n\n"
             f"BACKEND TOOL REGISTRY:\n{registry}\n\n"

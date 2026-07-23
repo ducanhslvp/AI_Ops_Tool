@@ -1,13 +1,19 @@
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
+import json
 import re
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai.gateway import AIGateway
+from app.ai.models import AIMessage as ProviderMessage
+from app.ai.models import ChatRequest
 from app.core.exceptions import AppError
 from app.domain.models import (
-    DiscoveryScan, DiscoverySchedule, KnowledgeDocument, Server, System, User,
+    AiMessage, AiSession, DiscoveryScan, DiscoverySchedule, KnowledgeDocument,
+    Server, System, User,
 )
 from app.schemas.discovery import DiscoveryCreate
 from app.services.operation_service import OperationService
@@ -24,10 +30,12 @@ DISCOVERY_ACTIONS = (
 
 
 class DiscoveryService:
-    def __init__(self, session: AsyncSession, registry: ToolRegistry, gateway: SshGateway) -> None:
+    def __init__(self, session: AsyncSession, registry: ToolRegistry, gateway: SshGateway,
+                 ai_gateway: AIGateway | None = None) -> None:
         self.session = session
         self.registry = registry
         self.operations = OperationService(session, registry, gateway)
+        self.ai_gateway = ai_gateway
 
     async def run(self, payload: DiscoveryCreate, user: User) -> DiscoveryScan:
         servers = await self._resolve_servers(payload)
@@ -67,11 +75,31 @@ class DiscoveryService:
                 plugin.enrich(node, evidence, payload.options.include_system_services)
             nodes.append(node)
         edges = build_dependency_edges(nodes, evidence_by_server)
+        ai_analysis: dict[str, Any] | None = None
+        if self.ai_gateway is not None:
+            try:
+                ai_analysis = await self._analyze_with_ai(
+                    scan=scan, user=user, servers=servers, nodes=nodes, edges=edges)
+                edges = self._merge_ai_edges(nodes, edges, ai_analysis)
+                evidence_by_server["_ai_analysis"] = {
+                    "provider": str(ai_analysis.get("provider", "")),
+                    "model": str(ai_analysis.get("model", "")),
+                    "summary": str(ai_analysis.get("summary", "")),
+                    "risks": json.dumps(ai_analysis.get("risks", []), ensure_ascii=True),
+                }
+            except Exception as exc:
+                evidence_by_server["_ai_analysis"] = {
+                    "error": type(exc).__name__,
+                    "summary": "AI analysis was unavailable; the validated collector graph was retained.",
+                }
+                failures += 1
         scan.nodes = nodes
         scan.edges = edges
         scan.raw_evidence = evidence_by_server
         scan.change_summary = self._diff(baseline, nodes, edges)
-        scan.summary = self._summary(nodes, edges, failures)
+        deterministic_summary = self._summary(nodes, edges, failures)
+        scan.summary = str(ai_analysis.get("summary")) if ai_analysis and ai_analysis.get(
+            "summary") else deterministic_summary
         scan.status = "partial" if failures else "completed"
         scan.completed_at = datetime.now(UTC)
         await self._update_knowledge(scan, servers)
@@ -82,6 +110,137 @@ class DiscoveryService:
         await self.session.commit()
         await self.session.refresh(scan)
         return scan
+
+    async def _analyze_with_ai(
+        self, *, scan: DiscoveryScan, user: User, servers: list[Server],
+        nodes: list[dict[str, Any]], edges: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        system_id = scan.system_id or servers[0].system_id
+        system = await self.session.get(System, system_id)
+        if system is None:
+            raise AppError("Discovery System context no longer exists", 409)
+        evidence = {
+            "scan_id": scan.id,
+            "system": {"id": system.id, "code": system.code, "name": system.name},
+            "nodes": [{"id": node["id"], **node["data"]} for node in nodes],
+            "detected_dependencies": edges,
+        }
+        task = (
+            "Analyze this sanitized infrastructure discovery snapshot. Return JSON only with "
+            "keys summary (string), risks (string array), and dependencies (array). Each "
+            "dependency must contain source_id, target_id, port, protocol, connection_type, "
+            "service_name and confidence. Use only node IDs present in the input. Do not "
+            "invent hosts, credentials, commands, or secrets.\n\n"
+            f"{json.dumps(evidence, ensure_ascii=True, default=str)}"
+        )
+        ai_session = AiSession(
+            user_id=user.id, system_id=system.id,
+            title=f"Discovery analysis - {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}",
+            memory={"kind": "infrastructure_discovery", "scan_id": scan.id},
+            status="running", reasoning_effort="medium",
+        )
+        self.session.add(ai_session)
+        await self.session.flush()
+        request = ChatRequest(
+            session_id=ai_session.id,
+            messages=(
+                ProviderMessage(role="system", content=(
+                    "You are the infrastructure discovery analyst. Analyze evidence only. "
+                    "Never request or execute tools in this analysis phase.")),
+                ProviderMessage(role="user", content=task),
+            ),
+            metadata={
+                "system_id": system.id, "discovery_scan_id": scan.id,
+                "reasoning_effort": "medium",
+            },
+        )
+        try:
+            result = await self.ai_gateway.chat(request)
+        except Exception:
+            ai_session.status = "failed"
+            ai_session.last_activity_at = datetime.now(UTC)
+            await self.session.flush()
+            raise
+        response = result.response
+        parsed = self._parse_ai_json(response.content)
+        parsed["provider"] = response.provider
+        parsed["model"] = response.model
+        ai_session.status = "idle"
+        ai_session.provider_session_id = response.provider_session_id
+        ai_session.last_activity_at = datetime.now(UTC)
+        ai_session.memory = {
+            **ai_session.memory, "provider": response.provider, "model": response.model,
+            "summary": str(parsed.get("summary", ""))[:4000],
+        }
+        self.session.add(AiMessage(session_id=ai_session.id, role="user", content=task))
+        self.session.add(AiMessage(
+            session_id=ai_session.id, role="assistant", content=response.content,
+            confidence={
+                "score": response.confidence if response.confidence is not None else 0.7,
+                "reason": response.reasoning_summary or "AI analysis of sanitized discovery evidence.",
+                "need_more_data": response.confidence is not None and response.confidence < 0.8,
+            },
+        ))
+        return parsed
+
+    @staticmethod
+    def _parse_ai_json(content: str) -> dict[str, Any]:
+        value = content.strip()
+        if value.startswith("```"):
+            value = re.sub(r"^```(?:json)?\s*|\s*```$", "", value, flags=re.I)
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            match = re.search(r"\{.*\}", value, flags=re.S)
+            if not match:
+                return {"summary": content[:4000], "risks": [], "dependencies": []}
+            try:
+                parsed = json.loads(match.group(0))
+            except json.JSONDecodeError:
+                return {"summary": content[:4000], "risks": [], "dependencies": []}
+        if not isinstance(parsed, dict):
+            return {"summary": content[:4000], "risks": [], "dependencies": []}
+        return {
+            "summary": str(parsed.get("summary", ""))[:8000],
+            "risks": parsed.get("risks", []) if isinstance(parsed.get("risks"), list) else [],
+            "dependencies": parsed.get("dependencies", [])
+            if isinstance(parsed.get("dependencies"), list) else [],
+        }
+
+    @staticmethod
+    def _merge_ai_edges(
+        nodes: list[dict[str, Any]], edges: list[dict[str, Any]],
+        analysis: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        node_ids = {str(node["id"]) for node in nodes}
+        merged = list(edges)
+        signatures = {(str(edge.get("source")), str(edge.get("target")),
+                       str(edge.get("port", ""))) for edge in edges}
+        for candidate in analysis.get("dependencies", []):
+            if not isinstance(candidate, dict):
+                continue
+            source = str(candidate.get("source_id", ""))
+            target = str(candidate.get("target_id", ""))
+            port = str(candidate.get("port", ""))
+            if source not in node_ids or target not in node_ids or source == target:
+                continue
+            signature = (source, target, port)
+            if signature in signatures:
+                continue
+            digest = sha256("|".join(signature).encode("utf-8")).hexdigest()[:16]
+            merged.append({
+                "id": f"ai-{digest}", "source": source, "target": target,
+                "port": int(port) if port.isdigit() else 0,
+                "protocol": str(candidate.get("protocol", "tcp"))[:20],
+                "connection_type": str(candidate.get(
+                    "connection_type", "ai_inferred"))[:80],
+                "service_name": str(candidate.get("service_name", ""))[:120],
+                "confidence": candidate.get("confidence") if isinstance(
+                    candidate.get("confidence"), (int, float)) else 0.5,
+                "reason": "AI-inferred from sanitized discovery evidence",
+            })
+            signatures.add(signature)
+        return merged
 
     async def run_schedule(self, schedule: DiscoverySchedule, user: User) -> DiscoveryScan:
         payload = DiscoveryCreate(

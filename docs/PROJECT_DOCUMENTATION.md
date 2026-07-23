@@ -67,7 +67,8 @@ flowchart LR
 - Policy boundary: decides `allow`, `deny`, or `approval_required` for every target operation.
 - Secret boundary: only Secret Manager can decrypt credentials; plaintext lifetime is operation-bound.
 - SSH boundary: short-lived connection, host-key verification, timeout, retry, output limit, close.
-- Audit boundary: append-only ORM controls and SHA-256 chaining expose modification or deletion.
+- Audit boundary: append-only runtime ORM controls and SHA-256 chaining expose tampering; explicit
+  Admin retention endpoints may delete records and atomically rebuild the remaining chain.
 
 ### Intended service extraction
 
@@ -197,7 +198,9 @@ must use external key management, pinned known-host keys, non-root service accou
 allow-lists, and minimal sudo permissions.
 
 SSH sessions use connect and command timeouts, bounded retries/output, normalized errors, and close
-after one operation. AI never receives credential material or the rendered command.
+after one operation. AI never receives credential material. AI may propose a read-only command only
+through `run_ssh_command`; the backend command guard, SSH Command Manager, policy, approval, Gateway,
+and audit remain authoritative.
 
 ## 6. Database
 
@@ -208,7 +211,8 @@ Main aggregates:
 
 - Identity: `users`, `roles`, `permissions`, `role_permissions`, `refresh_tokens`.
 - Inventory: `systems`, `environments`, `servers`, `credentials`.
-- Governance: `policy_rules`, `approval_requests`, `tool_configurations`.
+- Governance: `policy_rules`, `approval_requests`, `tool_configurations`,
+  `ai_command_approvals` (SSH Command Manager rules).
 - Evidence: `audit_logs`, `alerts`, `reports`, `report_templates`.
 - AI/knowledge: `ai_provider_configurations`, `ai_sessions`, `ai_messages`,
   `knowledge_documents`.
@@ -227,6 +231,45 @@ python -m alembic downgrade -1
 Review generated migrations. Test upgrade and rollback in staging and back up production first.
 For multiple API writers, serialize audit appends or use PostgreSQL locking and replicate the chain
 to immutable storage.
+
+For a new or repaired SQLite development installation:
+
+```powershell
+.\scripts\init_sqlite.ps1
+```
+
+The initializer is idempotent, runs all migrations, and creates the required Admin role/user and
+baseline platform records. `ROWS_PER_PAGE` defaults to `100`, is validated between `100` and `1000`,
+and is shared by backend pagination and frontend Enterprise DataTables.
+
+### Enterprise SSH operations
+
+SSH Command Manager supports two target scopes. A scoped rule binds an exact normalized command
+to one System and Server. A Global rule leaves both references empty and applies to every compatible
+target for the selected user; an exact server rule always takes precedence over a Global rule.
+
+SSH Credentials can be System-specific or Global. Systems may reference a default credential, while
+each Server continues to store its own credential reference and may override the System default.
+Secrets remain AES-GCM encrypted and are never returned through inventory APIs or written to a
+System workspace.
+
+Multi-Server Terminal uses a resizable control/results workspace. It validates one command against
+every Server in a System, evaluates Policy and Approval per target, dispatches allowed SSH work
+concurrently up to the requested worker limit, and then serializes Audit writes so the SHA-256
+integrity chain remains deterministic on SQLite.
+
+Remote file work uses structured `read_remote_file`, `write_remote_file`,
+`create_remote_directory`, `move_remote_file`, and `delete_remote_file` tools instead of an
+interactive editor. The backend validates absolute paths against separate readable/writable roots,
+blocks secret locations, caps read/write sizes, applies Policy/Approval, dispatches through SSH
+Gateway, and records each operation in Audit. Recursive directory deletion is not supported.
+Approval attachments are staged by the backend and downloaded only through authenticated Policy
+APIs; backend filesystem paths are not exposed.
+
+AI Chat Policy bypass requires the RBAC permission `ai:policy_bypass`, assigned to Admin and Operator
+in the baseline roles. It skips Policy decisions and approval prompts for one conversation, but
+never bypasses tool validation, path restrictions, SSH transport isolation, timeout/output limits,
+secret isolation, or Audit.
 
 ## 7. AI Adapter Layer
 
@@ -334,6 +377,12 @@ They atomically refresh `architecture.md`, `topology.md`, `dependencies.md`, `se
 `servers.yaml`, and a generated snapshot per affected System. Raw evidence remains in the governed
 database/audit path and is not copied wholesale into AI context. Schedules retain owner and evaluate
 the owner's current RBAC state before unattended execution.
+
+Interactive Run Discovery sends the sanitized collector snapshot through the active `AIGateway`
+(the same provider boundary used by Chats). The AI returns a bounded infrastructure summary, risks,
+and candidate dependencies. Backend validation discards unknown node IDs and merges only normalized
+edges. The analysis is also stored as a System-scoped conversation; collector output remains usable
+when AI analysis is unavailable.
 
 The React Flow UI groups nodes by system, environment, network, Docker, or Kubernetes. Initial
 positions are dependency-layered to reduce crossings. Nodes are freely draggable; positions are
@@ -483,6 +532,15 @@ The Development Test Environment works only with `APP_ENV=development` and
 `SSH_TRANSPORT=local_simulation` (or controlled testing mode). Staging/production settings validation
 rejects this combination. It uses the same Tool Registry, policy, SSH Gateway interface, and audit
 path as production, replacing only the transport adapter with deterministic reviewed snapshots.
+Accepted `run_ssh_command` calls such as `free -h` use the same path and resolve to reviewed
+simulation snapshots rather than host execution.
+
+Chat session detail loads only the newest 50 messages. Scrolling to the top requests older messages
+with a stable timestamp-plus-ID cursor, preserving scroll position and avoiding full-history loads.
+Audit administration supports single, bulk, and inclusive date-range retention actions; each
+authorized deletion rebuilds and verifies the SHA-256 integrity chain for remaining records.
+The UI separates general conversation/platform activity from server SSH commands. SSH command
+records retain only the configured output tail (`AUDIT_SSH_OUTPUT_MAX_CHARS`, default 500).
 
 Demo credentials exist only in non-production seed data:
 

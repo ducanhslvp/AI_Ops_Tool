@@ -1,5 +1,5 @@
 import { Outlet } from '@tanstack/react-router'
-import { Server, Bot } from 'lucide-react'
+import { Server, Bot, TerminalSquare } from 'lucide-react'
 import { Separator } from '@/components/ui/separator'
 import { ConfigDrawer } from '@/components/config-drawer'
 import { Header } from '@/components/layout/header'
@@ -19,6 +19,11 @@ const sidebarNavItems = [
     title: 'SSH Gateways',
     href: '/settings/account',
     icon: <Server size={18} />,
+  },
+  {
+    title: 'SSH Commands',
+    href: '/settings/ssh-commands',
+    icon: <TerminalSquare size={18} />,
   },
 ]
 
@@ -43,11 +48,11 @@ export function Settings() {
           </p>
         </div>
         <Separator className='my-4 lg:my-6' />
-        <div className='flex flex-1 flex-col space-y-2 overflow-hidden md:space-y-2 lg:flex-row lg:space-y-0 lg:space-x-12'>
-          <aside className='top-0 lg:sticky lg:w-1/5'>
+        <div className='flex min-w-0 flex-1 flex-col gap-4 overflow-hidden lg:flex-row lg:gap-6'>
+          <aside className='top-0 shrink-0 lg:sticky lg:w-56'>
             <SidebarNav items={sidebarNavItems} />
           </aside>
-          <div className='flex w-full overflow-y-hidden p-1'>
+          <div className='flex min-w-0 flex-1 overflow-y-hidden p-1'>
             <Outlet />
           </div>
         </div>

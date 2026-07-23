@@ -25,7 +25,7 @@ class LocalSimulationAdapter:
         (re.compile(r"^Get-PSDrive -PSProvider FileSystem$"), "windows_disk"),
         (re.compile(r"^top -bn1 \| head -20$"), "check_cpu"),
         (re.compile(r"^Get-Counter '\\Processor\(_Total\)\\% Processor Time'$"), "windows_cpu"),
-        (re.compile(r"^free -m$"), "check_memory"),
+        (re.compile(r"^free -(?:h|m)$"), "check_memory"),
         (re.compile(r"^Get-CimInstance Win32_OperatingSystem$"), "windows_memory"),
         (re.compile(r"^systemctl status [A-Za-z0-9_.@-]+ --no-pager$"), "check_service"),
         (re.compile(r"^Get-Service -Name '[A-Za-z0-9_.@-]+'$"), "windows_service"),
@@ -76,6 +76,14 @@ class LocalSimulationAdapter:
         ]
 
     async def execute(self, server: Server, command: str) -> SimulationResult:
+        if command.startswith("python3 -c ") and any(marker in command for marker in (
+            "base64.b64decode", "read_bytes", ".mkdir(", ".replace(", ".unlink("
+        )):
+            return SimulationResult(
+                stdout="Development adapter simulated the validated remote file operation.",
+                stderr="",
+                exit_status=0,
+            )
         profile = str((server.ssh_config or {}).get(
             "test_profile", self.manifest.get("active_profile", "healthy")
         ))

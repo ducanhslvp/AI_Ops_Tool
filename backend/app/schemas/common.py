@@ -4,6 +4,8 @@ from typing import Annotated
 from fastapi import Depends, Query, Response
 from pydantic import BaseModel, ConfigDict
 
+from app.core.config import get_settings
+
 
 class ApiMessage(BaseModel):
     message: str
@@ -25,13 +27,14 @@ class Pagination:
     def __init__(
         self,
         page: int = Query(1, ge=1),
-        page_size: int = Query(50, ge=1, le=200),
+        page_size: int | None = Query(None, ge=1, le=1000),
         offset: int | None = Query(None, ge=0),
-        limit: int | None = Query(None, ge=1, le=500),
+        limit: int | None = Query(None, ge=1, le=1000),
     ) -> None:
+        effective_page_size = limit or page_size or get_settings().rows_per_page
         self.page = page
-        self.page_size = limit or page_size
-        self.offset = offset if offset is not None else (page - 1) * page_size
+        self.page_size = effective_page_size
+        self.offset = offset if offset is not None else (page - 1) * effective_page_size
 
 
 PaginationDep = Annotated[Pagination, Depends()]

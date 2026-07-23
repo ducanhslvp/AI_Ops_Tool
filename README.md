@@ -36,6 +36,11 @@ The setup scripts create strong local secrets, install locked frontend dependenc
 
 Use `-NoStart` with the PowerShell setup script to install without starting services. For subsequent runs use `scripts/run_all.ps1`, `scripts/run_all.bat` or `sh scripts/run_all.sh`.
 
+To initialize or repair a standalone SQLite installation, run
+`.\scripts\init_sqlite.ps1`. The idempotent initializer applies every Alembic migration and creates
+the Admin role/user, baseline environments, a default System, SSH Gateway profile, and Codex CLI
+provider. Set `AIOPS_BOOTSTRAP_ADMIN_PASSWORD` outside development/testing.
+
 ## Demo Accounts
 
 Demo seed data is forbidden when `APP_ENV=production`.
@@ -64,4 +69,7 @@ npm run build
 
 `AI -> Tool Registry -> Policy -> Approval -> Backend-owned execution -> Audit`
 
-Tool arguments are validated against strict schemas. The registry maps actions such as `check_disk`, `tail_log` and `restart_service` to fixed platform commands. High-risk operations fail closed and require a separate approver. Every decision and execution is added to a chained SHA-256 audit record.
+AI exposes only `run_ssh_command`. Proposed read-only commands pass through the command guard, SSH
+Command Manager, policy, interactive approval, SSH Gateway, and audit; AI never opens SSH itself.
+High-risk or unregistered operations fail closed. Every decision and execution is added to a chained
+SHA-256 audit record.

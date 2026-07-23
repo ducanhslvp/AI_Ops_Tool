@@ -62,10 +62,17 @@ interface SessionRecord {
   model?: string | null
   reasoning_effort: ReasoningEffort
   include_full_memory: boolean
+  bypass_policy: boolean
 }
 
 interface SessionDetail extends SessionRecord {
+  messages_has_more: boolean
   messages: Array<{ id: string; role: string; content: string; created_at: string }>
+}
+interface MessagePage {
+  items: Array<{ id: string; role: string; content: string; created_at: string }>
+  has_more: boolean
+  next_before?: string | null
 }
 
 interface TimelineEvent {
@@ -126,14 +133,19 @@ export function AiChatPage() {
   const [model, setModel] = useState('')
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>('medium')
   const [includeFullMemory, setIncludeFullMemory] = useState(false)
+  const [bypassPolicy, setBypassPolicy] = useState(false)
+  const [bypassWarningOpen, setBypassWarningOpen] = useState(false)
   const [workspaceOpen, setWorkspaceOpen] = useState(false)
   const [clearMemoryOpen, setClearMemoryOpen] = useState(false)
   const [clearMemoryConfirmation, setClearMemoryConfirmation] = useState('')
   const [commandConsent, setCommandConsent] = useState<{ id: string; command: string; hostname?: string }>()
   const [workspacePreview, setWorkspacePreview] = useState<WorkspacePreview>()
+  const [hasOlderMessages, setHasOlderMessages] = useState(false)
+  const [loadingOlderMessages, setLoadingOlderMessages] = useState(false)
   const conversationScrollRef = useRef<HTMLDivElement>(null)
   const timelineScrollRef = useRef<HTMLDivElement>(null)
   const commandDecisionSubmittingRef = useRef(false)
+  const prependingMessagesRef = useRef(false)
 
   const systemsQuery = useQuery({ queryKey: ['inventory', 'systems', 'chat'], queryFn: async () =>
     (await apiClient.get<TargetSystem[]>('/inventory/systems', { params: { page: 1, page_size: 200 } })).data })
@@ -187,7 +199,7 @@ export function AiChatPage() {
     })).data,
     onSuccess: (session) => {
       queryClient.setQueryData<SessionRecord[]>(['ai', 'sessions', systemId], (current) => [session, ...(current ?? [])])
-      setSessionId(session.id); setMessages([]); setTimeline([]); setLastResult(undefined)
+      setSessionId(session.id); setBypassPolicy(false); setMessages([]); setHasOlderMessages(false); setTimeline([]); setLastResult(undefined)
     },
     onError: () => toast.error('Conversation could not be created.'),
   })
@@ -235,6 +247,19 @@ export function AiChatPage() {
     onError: () => toast.error('The command consent decision could not be applied.'),
     onSettled: () => { commandDecisionSubmittingRef.current = false },
   })
+  const changeBypass = useMutation({
+    mutationFn: async (enabled: boolean) => (await apiClient.put<{ bypass_policy: boolean }>(
+      `/ai/sessions/${sessionId}/policy-bypass`, { enabled }
+    )).data,
+    onSuccess: (data) => {
+      setBypassPolicy(data.bypass_policy)
+      setBypassWarningOpen(false)
+      toast[data.bypass_policy ? 'warning' : 'success'](
+        data.bypass_policy ? 'Session-only Policy bypass enabled. Every SSH action is still audited.' : 'Policy enforcement restored.'
+      )
+    },
+    onError: () => toast.error('Your role does not have the ai:policy_bypass permission.'),
+  })
   const submitCommandDecision = (decision: 'accept' | 'reject' | 'accept_session' | 'accept_command') => {
     if (commandDecisionSubmittingRef.current || decideCommand.isPending) return
     commandDecisionSubmittingRef.current = true
@@ -255,15 +280,50 @@ export function AiChatPage() {
 
   const loadSession = async (selectedId: string) => {
     if (chat.isPending) return
-    setSessionId(selectedId); setLastResult(undefined); setTimeline([])
+    setSessionId(selectedId); setHasOlderMessages(false); setLastResult(undefined); setTimeline([])
     try {
       const detail = (await apiClient.get<SessionDetail>(`/ai/sessions/${selectedId}`)).data
       setModel(detail.model ?? ''); setReasoningEffort(detail.reasoning_effort ?? 'medium')
       setIncludeFullMemory(detail.include_full_memory ?? false)
+      setBypassPolicy(detail.bypass_policy ?? false)
+      setHasOlderMessages(detail.messages_has_more)
       setMessages(detail.messages.map((item) => ({
         id: item.id, role: item.role, text: item.content, createdAt: item.created_at,
       })))
     } catch { toast.error('Chat history could not be loaded.') }
+  }
+
+  const loadOlderMessages = async () => {
+    const container = conversationScrollRef.current
+    const oldest = messages[0]
+    if (!sessionId || !oldest?.createdAt || !hasOlderMessages || loadingOlderMessages || !container) return
+    const previousHeight = container.scrollHeight
+    prependingMessagesRef.current = true
+    setLoadingOlderMessages(true)
+    try {
+      const page = (await apiClient.get<MessagePage>(`/ai/sessions/${sessionId}/messages`, {
+        params: { before: oldest.createdAt, before_id: oldest.id, limit: 50 },
+      })).data
+      setHasOlderMessages(page.has_more)
+      setMessages((current) => {
+        const existing = new Set(current.map((item) => item.id))
+        const older = page.items.filter((item) => !existing.has(item.id)).map((item) => ({
+          id: item.id, role: item.role, text: item.content, createdAt: item.created_at,
+        }))
+        return [...older, ...current]
+      })
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          container.scrollTop += container.scrollHeight - previousHeight
+          prependingMessagesRef.current = false
+        })
+      })
+    } catch {
+      prependingMessagesRef.current = false
+      toast.error('Older messages could not be loaded.')
+    } finally {
+      setLoadingOlderMessages(false)
+    }
   }
 
   const appendTimeline = (event: StreamEvent) => {
@@ -364,7 +424,9 @@ export function AiChatPage() {
   useEffect(() => {
     const container = conversationScrollRef.current
     if (!container) return
-    const scrollToLatest = () => { container.scrollTop = container.scrollHeight }
+    const scrollToLatest = () => {
+      if (!prependingMessagesRef.current) container.scrollTop = container.scrollHeight
+    }
     const observer = new MutationObserver(scrollToLatest)
     observer.observe(container, { childList: true, subtree: true, characterData: true })
     const frame = window.requestAnimationFrame(scrollToLatest)
@@ -380,8 +442,8 @@ export function AiChatPage() {
 
   const selectSystem = (next: string) => {
     setSystemId(next); setEnvironmentId(''); setServerId(''); setSessionId(undefined)
-    setMessages([]); setTimeline([]); setLastResult(undefined)
-    setModel(runtimeQuery.data?.models[0] ?? ''); setReasoningEffort('medium'); setIncludeFullMemory(false)
+    setMessages([]); setHasOlderMessages(false); setTimeline([]); setLastResult(undefined)
+    setModel(runtimeQuery.data?.models[0] ?? ''); setReasoningEffort('medium'); setIncludeFullMemory(false); setBypassPolicy(false)
   }
 
   const persistRuntime = (values: Record<string, unknown>) => {
@@ -439,13 +501,30 @@ export function AiChatPage() {
           options={reasoningEfforts.map((item) => ({ value: item, label: `${item === 'xhigh' ? 'Extra high' : item[0].toUpperCase() + item.slice(1)} effort` }))}
           onValueChange={(value) => { const effort = value as ReasoningEffort; setReasoningEffort(effort); persistRuntime({ reasoning_effort: effort }) }} />
         <label className='flex h-9 items-center gap-2 rounded-md border px-3 text-xs'><Switch checked={includeFullMemory} onCheckedChange={(checked) => { setIncludeFullMemory(checked); persistRuntime({ include_full_memory: checked }) }} /><Brain className='size-3.5' />Full memory</label>
+        <label className='flex h-9 items-center gap-2 rounded-md border border-destructive/50 bg-destructive/5 px-3 text-xs text-destructive'>
+          <Switch checked={bypassPolicy} disabled={!sessionId || changeBypass.isPending}
+            onCheckedChange={(checked) => checked ? setBypassWarningOpen(true) : changeBypass.mutate(false)} />
+          Bypass Policy
+        </label>
         <Button variant='outline' size='sm' disabled={!systemId} onClick={() => setWorkspaceOpen(true)}><Database className='size-4' />Workspace & memory</Button>
+        <Button variant='outline' size='sm' disabled={!systemId} onClick={() => {
+          window.location.assign(`/audit?mode=activity&system_id=${encodeURIComponent(systemId)}${serverId ? `&server_id=${encodeURIComponent(serverId)}` : ''}`)
+        }}>Audit history</Button>
       </div>
     </CardHeader>
     <CardContent className='flex min-h-0 flex-1 flex-col p-0'>
-      <div ref={conversationScrollRef} className='min-h-0 flex-1 overflow-auto px-4 py-5'>
+      <div ref={conversationScrollRef} onScroll={(event) => {
+        if (event.currentTarget.scrollTop <= 80) void loadOlderMessages()
+      }} className='min-h-0 flex-1 overflow-auto px-4 py-5'>
         {messages.length === 0 ? <div className='grid h-full place-items-center text-center'><div className='max-w-md space-y-2'><Bot className='mx-auto size-9 text-muted-foreground' /><p className='font-medium'>{systemId ? 'Start an operations investigation' : 'Choose a System first'}</p><p className='text-sm text-muted-foreground'>{systemId ? 'A conversation stays scoped to this System and its workspace context.' : 'Conversations, memory and available targets are managed independently for each System.'}</p></div></div> :
-          <div className='mx-auto flex w-full max-w-4xl flex-col gap-5'>{messages.map((message, index) => <Message key={message.id} role={message.role} text={message.text} createdAt={message.createdAt} pending={chat.isPending && index === messages.length - 1} />)}</div>}
+          <div className='mx-auto flex w-full max-w-4xl flex-col gap-5'>
+            {(hasOlderMessages || loadingOlderMessages) && <Button className='self-center' size='sm' variant='ghost'
+              disabled={loadingOlderMessages} onClick={() => void loadOlderMessages()}>
+              <RefreshCw className={cn('size-4', loadingOlderMessages && 'animate-spin')} />
+              {loadingOlderMessages ? 'Loading earlier messages...' : 'Load earlier messages'}
+            </Button>}
+            {messages.map((message, index) => <Message key={message.id} role={message.role} text={message.text} createdAt={message.createdAt} pending={chat.isPending && index === messages.length - 1} />)}
+          </div>}
       </div>
       <div className='border-t bg-background p-4'><div className='mx-auto max-w-4xl rounded-md border bg-card p-3'>
         <Textarea className='min-h-20 resize-none border-0 p-0 shadow-none focus-visible:ring-0' placeholder={systemId ? 'Ask AI to investigate, explain evidence, or prepare an approved action...' : 'Select a System before sending a message'} disabled={!systemId || Boolean(codexUnavailable)} value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submit() } }} />
@@ -479,6 +558,15 @@ export function AiChatPage() {
     onDeleteMemory={(id) => { if (window.confirm('Delete this memory entry from the database and workspace?')) deleteMemory.mutate(id) }} />
     <ClearMemoryDialog open={clearMemoryOpen} onOpenChange={setClearMemoryOpen} systemCode={workspaceQuery.data?.system.code ?? ''} confirmation={clearMemoryConfirmation} onConfirmationChange={setClearMemoryConfirmation} busy={clearMemory.isPending} onConfirm={() => clearMemory.mutate()} />
     <WorkspacePreviewDialog preview={workspacePreview} onOpenChange={(open) => !open && setWorkspacePreview(undefined)} />
+    <Dialog open={bypassWarningOpen} onOpenChange={setBypassWarningOpen}><DialogContent className='max-w-xl'>
+      <DialogHeader><DialogTitle>Enable session-only Policy bypass?</DialogTitle>
+        <DialogDescription>This grants the AI Agent permission to execute validated operations without Policy decisions or approval prompts for this conversation only.</DialogDescription></DialogHeader>
+      <div className='rounded-md border border-destructive/50 bg-destructive/5 p-4 text-sm'>
+        Command validation, writable-path restrictions, SSH Gateway timeouts, output limits and complete Audit logging remain mandatory. This setting does not apply to other conversations.
+      </div>
+      <DialogFooter><Button variant='outline' onClick={() => setBypassWarningOpen(false)}>Cancel</Button>
+        <Button variant='destructive' disabled={changeBypass.isPending} onClick={() => changeBypass.mutate(true)}>Enable for this session</Button></DialogFooter>
+    </DialogContent></Dialog>
     <CommandConsentDialog consent={commandConsent} busy={decideCommand.isPending} onDecision={submitCommandDecision} /></>
 }
 

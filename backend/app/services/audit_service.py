@@ -2,9 +2,10 @@ from datetime import UTC, datetime
 from hashlib import sha256
 import json
 
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import get_settings
 from app.domain.models import AuditLog
 
 
@@ -35,6 +36,11 @@ class AuditService:
         exit_code: int | None = None,
         approval_used: bool = False,
     ) -> AuditLog:
+        stored_output = (
+            output[-get_settings().audit_ssh_output_max_chars:]
+            if ssh_command and output
+            else output
+        )
         previous = await self.session.scalar(
             select(AuditLog).order_by(AuditLog.sequence_number.desc()).limit(1)
         )
@@ -51,7 +57,7 @@ class AuditService:
                 reasoning_summary or "",
                 tool_name or "",
                 ssh_command or "",
-                output or "",
+                stored_output or "",
                 decision or "",
                 str(duration_ms),
                 result,
@@ -78,7 +84,7 @@ class AuditService:
             reasoning_summary=reasoning_summary,
             tool_name=tool_name,
             ssh_command=ssh_command,
-            output=output,
+            output=stored_output,
             decision=decision,
             duration_ms=duration_ms,
             exit_code=exit_code,
@@ -126,6 +132,57 @@ class AuditService:
             previous_hash = item.integrity_hash
             count += 1
         return True, count
+
+    async def delete_records(self, *, ids: list[str] | None = None,
+                             date_from: datetime | None = None,
+                             date_to: datetime | None = None) -> int:
+        statement = delete(AuditLog)
+        filters = []
+        if ids is not None:
+            filters.append(AuditLog.id.in_(ids))
+        if date_from is not None:
+            filters.append(AuditLog.created_at >= date_from)
+        if date_to is not None:
+            filters.append(AuditLog.created_at <= date_to)
+        if not filters:
+            raise ValueError("At least one deletion filter is required")
+        result = await self.session.execute(statement.where(*filters))
+        await self._rebuild_chain()
+        return int(result.rowcount or 0)
+
+    async def _rebuild_chain(self) -> None:
+        records = list((await self.session.scalars(select(AuditLog).order_by(
+            AuditLog.sequence_number.asc()))).all())
+        previous_hash = "GENESIS"
+        for item in records:
+            integrity_hash = self._calculate_hash(item, previous_hash)
+            await self.session.execute(update(AuditLog).where(AuditLog.id == item.id).values(
+                integrity_hash=integrity_hash))
+            previous_hash = integrity_hash
+
+    def _calculate_hash(self, item: AuditLog, previous_hash: str) -> str:
+        material_values = [
+            previous_hash,
+            self._as_utc(item.created_at).isoformat(),
+            item.user_id or "",
+            item.session_id or "",
+            item.server_id or "",
+            item.prompt or "",
+            item.reasoning_summary or "",
+            item.tool_name or "",
+            item.ssh_command or "",
+            item.output or "",
+            item.decision or "",
+            str(item.duration_ms),
+            item.result,
+        ]
+        if item.integrity_version >= 2:
+            material_values.extend([
+                item.provider_input or "", item.provider or "", item.model or "",
+                item.request_id or "", self._canonical_json(item.context_sources or []),
+                self._canonical_json(item.tool_events or []), str(item.integrity_version),
+            ])
+        return sha256("|".join(material_values).encode("utf-8")).hexdigest()
 
     @staticmethod
     def _as_utc(value: datetime) -> datetime:

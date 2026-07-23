@@ -51,19 +51,23 @@ export function PlatformSettingsPage({ section }: { section: SettingsSection }) 
       const detail = body?.detail ?? body?.error?.message ?? 'Connection test failed.'
       setProviderHealth((current) => ({ ...current, [item.id]: { provider: item.provider_type ?? 'provider', status: 'disconnected', detail } })); toast.error(detail) } })
   return <ContentSection title={metadata[section][0]} desc={metadata[section][1]}>
-    <div>{section === 'ai-providers' && <p className='mb-4 max-w-3xl text-sm text-muted-foreground'>AI Chat uses the active provider only. Codex CLI runs under the backend service account and reuses the selected System workspace without storing an API key.</p>}
+    <div className='w-full'>{section === 'ai-providers' && <p className='mb-4 max-w-3xl text-sm text-muted-foreground'>AI Chat uses the active provider only. Codex CLI runs under the backend service account and reuses the selected System workspace without storing an API key.</p>}
     {section === 'ssh-gateways' && <p className='mb-4 max-w-3xl text-sm text-muted-foreground'>The active profile is loaded for each Terminal, Discovery and AI command request. Credentials remain isolated in Secret Manager.</p>}
     <div className='mb-4 flex flex-wrap items-center gap-2'><Input className='min-w-56 flex-1' value={query} onChange={(e) => setQuery(e.target.value)} placeholder={`Search ${metadata[section][0].toLowerCase()}`} />
       <Button onClick={() => setEditing(null)}><Plus className='size-4' />Add {section === 'ai-providers' ? 'provider' : 'profile'}</Button></div>
-    <div className='divide-y rounded-md border'>{records.map((item) => <div key={item.id} className='flex items-center gap-3 p-3'>
-      <div className='min-w-0 flex-1'><p className='truncate text-sm font-medium'>{item.name ?? `${item.scope}/${item.key}`}</p>
+    <div className='w-full divide-y rounded-md border'>{records.map((item) => <div key={item.id} className='grid w-full gap-4 p-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-center'>
+      <div className='min-w-0'><p className='truncate text-sm font-medium'>{item.name ?? `${item.scope}/${item.key}`}</p>
         <p className='truncate text-xs text-muted-foreground'>{section === 'ai-providers' ? `${item.provider_type === 'codex' ? 'Codex CLI default model' : `${item.provider_type} / ${item.model}`}${item.exclusive_mode ? ' / exclusive' : ''}` : item.category ?? item.channel_type ?? item.description ?? 'Database setting'}</p>
         {section === 'ai-providers' && <p className='mt-1 truncate text-xs text-muted-foreground'>{providerHealth[item.id]?.detail ?? item.health_detail ?? item.detected_version ?? 'Connection has not been tested'}</p>}</div>
-      <StatusBadge value={providerHealth[item.id]?.status ?? (item.health_status !== 'unknown' ? item.health_status : item.is_active ? 'active' : item.enabled === false ? 'disabled' : 'configured')} />
+      <div className='flex flex-wrap items-center justify-end gap-2'><StatusBadge value={providerHealth[item.id]?.status ?? (
+        item.health_status && item.health_status !== 'unknown'
+          ? item.health_status
+          : item.is_active ? 'active' : item.enabled === false ? 'disabled' : 'configured'
+      )} />
       {section === 'ai-providers' && <Button title='Test connection' aria-label={`Test connection ${item.name}`} size='sm' variant='outline' disabled={testConnection.isPending && testConnection.variables?.id === item.id} onClick={() => testConnection.mutate(item)}>{testConnection.isPending && testConnection.variables?.id === item.id ? <Loader2 className='size-4 animate-spin' /> : <PlugZap className='size-4' />}Test</Button>}
       {section === 'ai-providers' && !item.is_active && <Button title='Activate provider' size='sm' variant='outline' onClick={() => activate.mutate(item.id)}><CheckCircle2 className='size-4' />Activate</Button>}
       <Button title='Edit' size='icon' variant='ghost' onClick={() => setEditing(item)}><Pencil className='size-4' /></Button>
-      <Button title='Delete' size='icon' variant='ghost' onClick={() => setDeleting(item)}><Trash2 className='size-4' /></Button>
+      <Button title='Delete' size='icon' variant='ghost' onClick={() => setDeleting(item)}><Trash2 className='size-4' /></Button></div>
     </div>)}{!records.length && <p className='p-6 text-center text-sm text-muted-foreground'>No configuration records.</p>}</div>
     <ResourceDialog key={`${section}-${editing?.id ?? 'new'}-${editing !== undefined}`} section={section} record={editing}
       open={editing !== undefined} onOpenChange={(open) => !open && setEditing(undefined)} />

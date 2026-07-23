@@ -1,3 +1,4 @@
+from hashlib import sha256
 from typing import Annotated, Any, TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -10,17 +11,18 @@ from app.ai.models import ProviderHealth, ProviderStatus
 from app.api.dependencies import DbSession, get_gateway, require_permission
 from app.core.security import hash_password
 from app.domain.models import (
-    AiProviderConfiguration, NotificationChannel, Permission, PlatformSetting, Plugin,
-    ReportTemplate, Role, SshGatewayProfile, User,
+    AiCommandApproval, AiProviderConfiguration, NotificationChannel, Permission,
+    PlatformSetting, Plugin, ReportTemplate, Role, Server, SshGatewayProfile, System, User,
 )
 from app.schemas.admin import (
     AiProviderConfigOut, AiProviderWrite, NotificationOut, NotificationWrite,
     PermissionAdminOut, PermissionWrite, PluginOut, PluginWrite, ReportTemplateOut,
     ReportTemplateWrite, RoleAdminOut, RoleWrite, SettingOut, SettingWrite, SshGatewayOut,
-    SshGatewayWrite, UserAdminOut, UserCreate, UserUpdate,
+    SshCommandOut, SshCommandWrite, SshGatewayWrite, UserAdminOut, UserCreate, UserUpdate,
 )
 from app.schemas.common import PaginationDep, set_pagination_headers
 from app.services.ai_provider_runtime import apply_health, provider_config_from_record
+from app.services.command_guard import SshCommandGuard
 
 router = APIRouter(prefix="/admin", tags=["administration"])
 AdminUser = Annotated[User, Depends(require_permission("*"))]
@@ -182,6 +184,132 @@ async def delete_user(item_id: str, session: DbSession, actor: AdminUser):
     if item_id == actor.id:
         raise HTTPException(status_code=409, detail="You cannot delete your own account")
     await session.delete(await _get(session, User, item_id))
+    await session.commit()
+    return Response(status_code=204)
+
+
+def _ssh_command_out(row) -> SshCommandOut:
+    item, email, system_code, hostname = row
+    return SshCommandOut.model_validate({
+        **item.__dict__, "user_email": email, "system_code": system_code,
+        "server_hostname": hostname,
+    })
+
+
+async def _validated_ssh_command_values(
+    session: AsyncSession, payload: SshCommandWrite, actor: User,
+) -> dict:
+    user = await _get(session, User, payload.user_id or actor.id)
+    if (payload.system_id is None) != (payload.server_id is None):
+        raise HTTPException(
+            status_code=422,
+            detail="Select both System and Server for a scoped rule, or neither for a Global rule",
+        )
+    system = await _get(session, System, payload.system_id) if payload.system_id else None
+    server = await _get(session, Server, payload.server_id) if payload.server_id else None
+    if server is not None and system is not None and server.system_id != system.id:
+        raise HTTPException(status_code=422, detail="Server does not belong to the selected System")
+    # Global rules are validated against the Linux command contract. Windows rules remain
+    # server-scoped because the two command languages intentionally have different allowlists.
+    command = SshCommandGuard().validate(payload.command, server.os if server else "linux").command
+    return {
+        "user_id": user.id,
+        "system_id": system.id if system else None,
+        "server_id": server.id if server else None,
+        "command": command, "command_hash": sha256(command.encode("utf-8")).hexdigest(),
+        "effect": payload.effect, "description": payload.description,
+        "is_active": payload.is_active,
+    }
+
+
+@router.get("/ssh-commands", response_model=list[SshCommandOut])
+async def list_ssh_commands(
+    session: DbSession, _: AdminUser, response: Response, pagination: PaginationDep,
+    q: str = "", effect: str | None = None,
+) -> list[SshCommandOut]:
+    statement = select(AiCommandApproval, User.email, System.code, Server.hostname).join(
+        User, User.id == AiCommandApproval.user_id
+    ).outerjoin(System, System.id == AiCommandApproval.system_id).outerjoin(
+        Server, Server.id == AiCommandApproval.server_id
+    )
+    if q:
+        statement = statement.where(or_(
+            AiCommandApproval.command.ilike(f"%{q}%"), User.email.ilike(f"%{q}%"),
+            System.code.ilike(f"%{q}%"), Server.hostname.ilike(f"%{q}%"),
+        ))
+    if effect:
+        statement = statement.where(AiCommandApproval.effect == effect)
+    total = await session.scalar(select(func.count()).select_from(
+        statement.order_by(None).subquery()
+    )) or 0
+    set_pagination_headers(response, total, pagination)
+    rows = (await session.execute(statement.order_by(
+        AiCommandApproval.last_used_at.desc(), AiCommandApproval.updated_at.desc()
+    ).offset(pagination.offset).limit(pagination.page_size))).all()
+    return [_ssh_command_out(row) for row in rows]
+
+
+@router.post("/ssh-commands", response_model=SshCommandOut, status_code=201)
+async def create_ssh_command(
+    payload: SshCommandWrite, session: DbSession, actor: AdminUser,
+) -> SshCommandOut:
+    values = await _validated_ssh_command_values(session, payload, actor)
+    conflict = await session.scalar(select(AiCommandApproval.id).where(
+        AiCommandApproval.user_id == values["user_id"],
+        AiCommandApproval.system_id.is_(None) if values["system_id"] is None
+        else AiCommandApproval.system_id == values["system_id"],
+        AiCommandApproval.server_id.is_(None) if values["server_id"] is None
+        else AiCommandApproval.server_id == values["server_id"],
+        AiCommandApproval.command_hash == values["command_hash"],
+    ))
+    if conflict:
+        raise HTTPException(status_code=409, detail="This scoped SSH command already exists")
+    item = AiCommandApproval(**values)
+    session.add(item)
+    await session.commit()
+    row = (await session.execute(select(
+        AiCommandApproval, User.email, System.code, Server.hostname
+    ).join(User, User.id == AiCommandApproval.user_id).outerjoin(
+        System, System.id == AiCommandApproval.system_id
+    ).outerjoin(Server, Server.id == AiCommandApproval.server_id).where(
+        AiCommandApproval.id == item.id
+    ))).one()
+    return _ssh_command_out(row)
+
+
+@router.put("/ssh-commands/{item_id}", response_model=SshCommandOut)
+async def update_ssh_command(
+    item_id: str, payload: SshCommandWrite, session: DbSession, actor: AdminUser,
+) -> SshCommandOut:
+    item = await _get(session, AiCommandApproval, item_id)
+    values = await _validated_ssh_command_values(session, payload, actor)
+    conflict = await session.scalar(select(AiCommandApproval.id).where(
+        AiCommandApproval.id != item.id,
+        AiCommandApproval.user_id == values["user_id"],
+        AiCommandApproval.system_id.is_(None) if values["system_id"] is None
+        else AiCommandApproval.system_id == values["system_id"],
+        AiCommandApproval.server_id.is_(None) if values["server_id"] is None
+        else AiCommandApproval.server_id == values["server_id"],
+        AiCommandApproval.command_hash == values["command_hash"],
+    ))
+    if conflict:
+        raise HTTPException(status_code=409, detail="This scoped SSH command already exists")
+    for key, value in values.items():
+        setattr(item, key, value)
+    await session.commit()
+    row = (await session.execute(select(
+        AiCommandApproval, User.email, System.code, Server.hostname
+    ).join(User, User.id == AiCommandApproval.user_id).outerjoin(
+        System, System.id == AiCommandApproval.system_id
+    ).outerjoin(Server, Server.id == AiCommandApproval.server_id).where(
+        AiCommandApproval.id == item.id
+    ))).one()
+    return _ssh_command_out(row)
+
+
+@router.delete("/ssh-commands/{item_id}", status_code=204)
+async def delete_ssh_command(item_id: str, session: DbSession, _: AdminUser) -> Response:
+    await session.delete(await _get(session, AiCommandApproval, item_id))
     await session.commit()
     return Response(status_code=204)
 

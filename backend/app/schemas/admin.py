@@ -147,6 +147,32 @@ class SshGatewayOut(Timestamped):
     is_active: bool
 
 
+class SshCommandWrite(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    user_id: str | None = None
+    system_id: str | None = None
+    server_id: str | None = None
+    command: str = Field(min_length=1, max_length=512)
+    effect: Literal["allow", "deny", "approval_required"] = "approval_required"
+    description: str = Field(default="", max_length=255)
+    is_active: bool = True
+
+
+class SshCommandOut(Timestamped):
+    user_id: str
+    user_email: str
+    system_id: str | None
+    system_code: str | None
+    server_id: str | None
+    server_hostname: str | None
+    command: str
+    effect: str
+    description: str
+    is_active: bool
+    use_count: int
+    last_used_at: datetime | None
+
+
 class AiProviderWrite(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=2, max_length=80, pattern=r"^[a-z0-9_-]+$")
@@ -168,7 +194,7 @@ class AiProviderWrite(BaseModel):
         if self.provider_type == "codex":
             allowed = {
                 "mode", "executable", "timeout_seconds", "profile", "codex_home",
-                "ephemeral", "verify_authentication", "max_output_bytes",
+                "ephemeral", "verify_authentication", "max_output_bytes", "models",
             }
             if set(self.config) - allowed:
                 raise ValueError("Codex CLI configuration contains unsupported fields")

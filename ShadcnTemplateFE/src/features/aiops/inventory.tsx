@@ -23,7 +23,7 @@ import { StatusBadge } from './status-badge'
 
 type Resource = 'systems' | 'servers' | 'credentials' | 'environments'
 interface BaseRecord { id: string; name?: string; created_at: string }
-interface SystemRecord extends BaseRecord { code: string; name: string; owner: string; description: string; criticality: string }
+interface SystemRecord extends BaseRecord { code: string; name: string; owner: string; description: string; criticality: string; default_credential_id: string | null }
 interface EnvironmentRecord extends BaseRecord { name: string; description: string; risk_weight: number }
 interface CredentialRecord extends BaseRecord { name: string; system_id: string | null; username: string; provider: string; metadata_json: Record<string, unknown>; is_active: boolean }
 interface ServerRecord extends BaseRecord { system_id: string; environment_id: string; credential_id: string | null;
@@ -42,7 +42,7 @@ const resourceLabels: Record<Resource, string> = {
 }
 
 const emptyForms = {
-  systems: { name: '', code: '', owner: '', description: '', criticality: 'medium' },
+  systems: { name: '', code: '', owner: '', description: '', criticality: 'medium', default_credential_id: '' },
   environments: { name: '', description: '', risk_weight: 1 },
   credentials: { name: '', system_id: '', username: '', password: '', is_active: true },
   servers: { hostname: '', ip_address: '', os: 'Ubuntu 24.04', server_type: 'linux', role: '',
@@ -62,13 +62,13 @@ export function InventoryPage() {
   const [defaultSystemId, setDefaultSystemId] = useState('')
   const [importReport, setImportReport] = useState<ImportResult>()
   const systemsQuery = useQuery({ queryKey: ['inventory', 'systems'], queryFn: async () =>
-    (await apiClient.get<SystemRecord[]>('/inventory/systems')).data })
+    (await apiClient.get<SystemRecord[]>('/inventory/systems', { params: { page: 1, page_size: 1000 } })).data })
   const serversQuery = useQuery({ queryKey: ['inventory', 'servers'], queryFn: () =>
     getPaginated<ServerRecord>('/inventory/servers', { page: 1, page_size: 200 }) })
   const environmentsQuery = useQuery({ queryKey: ['inventory', 'environments'], queryFn: async () =>
-    (await apiClient.get<EnvironmentRecord[]>('/inventory/environments')).data })
+    (await apiClient.get<EnvironmentRecord[]>('/inventory/environments', { params: { page: 1, page_size: 1000 } })).data })
   const credentialsQuery = useQuery({ queryKey: ['inventory', 'credentials'], queryFn: async () =>
-    (await apiClient.get<CredentialRecord[]>('/inventory/credentials')).data })
+    (await apiClient.get<CredentialRecord[]>('/inventory/credentials', { params: { page: 1, page_size: 1000 } })).data })
   const systemDetailQuery = useQuery({ queryKey: ['inventory', 'system-detail', viewingSystem?.id], enabled: Boolean(viewingSystem),
     queryFn: async () => (await apiClient.get<SystemDetail>(`/inventory/systems/${viewingSystem?.id}`)).data })
   const loadedRecords = useMemo(() => {
@@ -163,7 +163,10 @@ function InventoryDialog({ resource, record, systems, environments, credentials,
   onOpenChange: (open: boolean) => void }) {
   const client = useQueryClient()
   const initial = record ? toForm(resource, record) : { ...emptyForms[resource],
-    ...(resource === 'servers' || resource === 'credentials' ? { system_id: defaultSystemId } : {}) }
+    ...(resource === 'servers' || resource === 'credentials' ? { system_id: defaultSystemId } : {}),
+    ...(resource === 'servers' && defaultSystemId ? {
+      credential_id: systems.find((item) => item.id === defaultSystemId)?.default_credential_id ?? '',
+    } : {}) }
   const [form, setForm] = useState<Record<string, unknown>>(initial)
   const key = `${resource}-${record?.id ?? 'new'}-${open}`
   const save = useMutation({ mutationFn: async () => {
@@ -177,27 +180,35 @@ function InventoryDialog({ resource, record, systems, environments, credentials,
     <Input id={name} type={type} required={required} value={String(form[name] ?? '')}
       onChange={(e) => setForm({ ...form, [name]: type === 'number' ? Number(e.target.value) : e.target.value })} /></div>
   const selectedSystemId = String(form.system_id ?? '')
-  const eligibleCredentials = credentials.filter((item) => item.system_id === selectedSystemId && item.is_active)
+  const eligibleCredentials = credentials.filter((item) =>
+    (item.system_id === null || item.system_id === selectedSystemId) && item.is_active)
   return <Dialog key={key} open={open} onOpenChange={onOpenChange}><DialogContent className='max-h-[90svh] overflow-auto sm:max-w-2xl'>
     <DialogHeader><DialogTitle>{record ? 'Edit' : 'Add'} {resource.slice(0, -1)}</DialogTitle>
       <DialogDescription>Changes are validated and persisted through the backend API.</DialogDescription></DialogHeader>
     <form id='inventory-form' className='grid gap-4' onSubmit={(e) => { e.preventDefault(); save.mutate() }}>
       {resource === 'systems' && <>{field('name', 'Name')}{field('code', 'Code')}{field('owner', 'Owner')}
-        {field('criticality', 'Criticality')}<TextField label='Description' value={String(form.description ?? '')}
+        {field('criticality', 'Criticality')}<SelectField label='Default SSH credential (optional)' allowClear value={String(form.default_credential_id ?? '')}
+          options={credentials.filter((item) => item.is_active && (!item.system_id || item.system_id === record?.id))
+            .sort((left, right) => Number(Boolean(left.system_id)) - Number(Boolean(right.system_id)) || left.name.localeCompare(right.name))
+            .map((item) => [item.id, `${item.name} - ${item.username} (${item.system_id ? 'System' : 'Global'})`])}
+          onChange={(default_credential_id) => setForm({ ...form, default_credential_id })} />
+        <p className='text-xs text-muted-foreground'>A new System can immediately use any active Global credential. System-scoped credentials become available after the System exists.</p>
+        <TextField label='Description' value={String(form.description ?? '')}
           onChange={(value) => setForm({ ...form, description: value })} /></>}
       {resource === 'environments' && <>{field('name', 'Name')}{field('risk_weight', 'Risk weight', 'number')}
         <TextField label='Description' value={String(form.description ?? '')} onChange={(value) => setForm({ ...form, description: value })} /></>}
-      {resource === 'credentials' && <><SelectField label='System' value={selectedSystemId} options={systems.map((x) => [x.id, `${x.code} - ${x.name}`])}
+      {resource === 'credentials' && <><SelectField label='System scope (optional)' value={selectedSystemId} allowClear options={systems.map((x) => [x.id, `${x.code} - ${x.name}`])}
           onChange={(value) => setForm({ ...form, system_id: value })} />{field('name', 'Credential name')}{field('username', 'SSH username')}
         {field('password', record ? 'New password (leave blank to keep current)' : 'SSH password', 'password', !record)}
-        <p className='rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground'>The password is encrypted by the backend Secret Manager using AES-GCM. It is never returned by the API or written to the System workspace.</p></>}
+        <p className='rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground'>Leave System empty to create a global credential available to every System. The password is encrypted by the backend Secret Manager using AES-GCM and is never returned by the API or written to a workspace.</p></>}
       {resource === 'servers' && <>{field('hostname', 'Hostname')}{field('ip_address', 'IP address')}{field('os', 'Operating system')}
         {field('server_type', 'Server type')}{field('role', 'Role')}{field('tags', 'Tags, comma separated')}{field('port', 'SSH port', 'number')}
         <SelectField label='System' value={String(form.system_id ?? '')} options={systems.map((x) => [x.id, `${x.code} - ${x.name}`])}
-          onChange={(value) => setForm({ ...form, system_id: value, credential_id: '' })} />
+          onChange={(value) => setForm({ ...form, system_id: value,
+            credential_id: systems.find((item) => item.id === value)?.default_credential_id ?? '' })} />
         <SelectField label='Environment' value={String(form.environment_id ?? '')} options={environments.map((x) => [x.id, x.name])}
           onChange={(value) => setForm({ ...form, environment_id: value })} />
-        <SelectField label='SSH credential' value={String(form.credential_id ?? '')} options={eligibleCredentials.map((x) => [x.id, `${x.name} - ${x.username}`])}
+        <SelectField label='SSH credential' value={String(form.credential_id ?? '')} options={eligibleCredentials.map((x) => [x.id, `${x.name} - ${x.username} (${x.system_id ? 'System' : 'Global'})`])}
           onChange={(value) => setForm({ ...form, credential_id: value })} />
         <p className='rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground'>Create or update credentials in the SSH credentials tab. This server stores only the credential reference; passwords remain encrypted and are never returned to the browser.</p>
         <TextField label='Description' value={String(form.description ?? '')} onChange={(value) => setForm({ ...form, description: value })} /></>}
@@ -241,9 +252,9 @@ function SystemDetailsDialog({ system, detail, loading, onOpenChange, onEditSyst
 function TextField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
   return <div className='space-y-1'><Label>{label}</Label><Textarea value={value} onChange={(e) => onChange(e.target.value)} /></div>
 }
-function SelectField({ label, value, options, onChange }: { label: string; value: string; options: string[][]; onChange: (value: string) => void }) {
+function SelectField({ label, value, options, onChange, allowClear = false }: { label: string; value: string; options: string[][]; onChange: (value: string) => void; allowClear?: boolean }) {
   return <div className='space-y-1'><Label>{label}</Label><SearchableSelect ariaLabel={label} value={value} onValueChange={onChange}
-    placeholder={`Select ${label.toLowerCase()}`} searchPlaceholder={`Search ${label.toLowerCase()}...`}
+    allowClear={allowClear} placeholder={allowClear ? 'Global / all Systems' : `Select ${label.toLowerCase()}`} searchPlaceholder={`Search ${label.toLowerCase()}...`}
     options={options.map(([id, name]) => ({ value: id, label: name }))} /></div>
 }
 function displayName(item: InventoryRecord) { return 'hostname' in item ? item.hostname : item.name }
@@ -266,7 +277,8 @@ function inventoryColumns(resource: Resource, systems: SystemRecord[], environme
   ]
   if (resource === 'credentials') return [
     { id: 'name', header: 'Credential', accessor: displayName, cell: (item) => <span className='font-medium'>{displayName(item)}</span> },
-    { id: 'system', header: 'System', accessor: (item) => systems.find((value) => value.id === (item as CredentialRecord).system_id)?.code ?? 'Unassigned' },
+    { id: 'system', header: 'Scope', accessor: (item) => systems.find((value) => value.id === (item as CredentialRecord).system_id)?.code ?? 'Global',
+      cell: (item) => (item as CredentialRecord).system_id ? systems.find((value) => value.id === (item as CredentialRecord).system_id)?.code ?? 'Unknown' : <StatusBadge value='global' /> },
     { id: 'username', header: 'SSH username', accessor: (item) => (item as CredentialRecord).username || 'Not available' },
     { id: 'security', header: 'Password', accessor: () => 'Encrypted', cell: () => <span className='text-xs text-muted-foreground'>Encrypted / hidden</span> },
     { id: 'status', header: 'Status', accessor: statusValue, cell: (item) => <StatusBadge value={statusValue(item)} />, size: 140 },
@@ -282,15 +294,17 @@ function toForm(resource: Resource, item: InventoryRecord): Record<string, unkno
     password: '', is_active: (item as CredentialRecord).is_active }
   if (resource === 'servers') { const server = item as ServerRecord; return { ...server, tags: server.tags.join(', '),
     port: Number(server.ssh_config.port ?? 22), credential_id: server.credential_id ?? '' } }
-  return { ...item } }
+  return { ...item, ...('code' in item ? { default_credential_id: (item as SystemRecord).default_credential_id ?? '' } : {}) } }
 function toPayload(resource: Resource, form: Record<string, unknown>, editing: boolean) { if (resource === 'credentials') {
   const secret = form.password ? { username: form.username, password: form.password } : undefined
-  return editing ? { name: form.name, system_id: form.system_id, username: form.username, metadata_json: {}, is_active: form.is_active, ...(secret ? { secret_payload: secret } : {}) } :
-    { name: form.name, system_id: form.system_id, metadata_json: {}, secret_payload: secret } }
+  const systemId = form.system_id || null
+  return editing ? { name: form.name, system_id: systemId, username: form.username, metadata_json: {}, is_active: form.is_active, ...(secret ? { secret_payload: secret } : {}) } :
+    { name: form.name, system_id: systemId, metadata_json: {}, secret_payload: secret } }
   if (resource === 'servers') return { hostname: form.hostname, ip_address: form.ip_address, os: form.os,
     server_type: form.server_type, role: form.role, description: form.description, system_id: form.system_id,
     environment_id: form.environment_id, credential_id: form.credential_id || null,
     tags: String(form.tags ?? '').split(',').map((x) => x.trim()).filter(Boolean), ssh_config: { port: Number(form.port) } }
   const { id, created_at, updated_at, ...payload } = form
+  if (resource === 'systems') payload.default_credential_id = payload.default_credential_id || null
   void id; void created_at; void updated_at
   return payload }

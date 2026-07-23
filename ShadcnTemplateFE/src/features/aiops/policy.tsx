@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Copy, Download, Pencil, Plus, Power, PowerOff, ShieldCheck, Trash2 } from 'lucide-react'
+import { Copy, Download, FileUp, Pencil, Plus, Power, PowerOff, ShieldCheck, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { apiClient } from '@/lib/api-client'
 import { Button } from '@/components/ui/button'
@@ -12,6 +12,7 @@ import { Label } from '@/components/ui/label'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { ConfirmDialog } from '@/components/confirm-dialog'
+import { SearchableSelect } from '@/components/searchable-select'
 import { Header } from '@/components/layout/header'
 import { Main } from '@/components/layout/main'
 import { ProfileDropdown } from '@/components/profile-dropdown'
@@ -24,7 +25,8 @@ interface PolicyRule { id: string; name: string; description: string; effect: st
   risk_level: string | null; time_window: Record<string, unknown>; is_active: boolean }
 interface ToolRecord { name: string; plugin: string; description: string; risk_level: string; target_types: string[] }
 interface Approval { id: string; action: string; reason: string; impact: string; status: string;
-  server_id: string | null; created_at: string }
+  server_id: string | null; plan: Record<string, unknown>; created_at: string }
+interface ServerLookup { id: string; hostname: string; ip_address: string; system_id: string }
 const emptyRule = { name: '', description: '', effect: 'allow', priority: 100, role: '', environment: '',
   server_type: '', action: '', risk_level: 'low', is_active: true }
 
@@ -35,12 +37,16 @@ export function PolicyPage() {
   const [deleting, setDeleting] = useState<PolicyRule>()
   const [editingTool, setEditingTool] = useState<ToolRecord>()
   const [deletingTool, setDeletingTool] = useState<ToolRecord>()
+  const [editingApproval, setEditingApproval] = useState<Approval | null | undefined>()
+  const [deletingApproval, setDeletingApproval] = useState<Approval>()
   const rulesQuery = useQuery({ queryKey: ['policy', 'rules'], queryFn: async () =>
     (await apiClient.get<PolicyRule[]>('/policy/rules', { params: { page: 1, page_size: 200 } })).data })
   const toolsQuery = useQuery({ queryKey: ['tools'], queryFn: async () =>
     (await apiClient.get<ToolRecord[]>('/tools')).data })
   const approvalsQuery = useQuery({ queryKey: ['policy', 'approvals'], queryFn: async () =>
     (await apiClient.get<Approval[]>('/policy/approvals', { params: { page: 1, page_size: 200 } })).data })
+  const serversQuery = useQuery({ queryKey: ['inventory', 'servers', 'policy-approvals'], queryFn: async () =>
+    (await apiClient.get<ServerLookup[]>('/inventory/servers', { params: { page: 1, page_size: 1000 } })).data })
   const rules = (rulesQuery.data ?? []).filter((rule) => !effect || rule.effect === effect)
   const remove = useMutation({ mutationFn: async (id: string) => apiClient.delete(`/policy/rules/${id}`),
     onSuccess: async () => { setDeleting(undefined); await client.invalidateQueries({ queryKey: ['policy', 'rules'] }); toast.success('Policy deleted.') },
@@ -59,6 +65,13 @@ export function PolicyPage() {
     apiClient.post(`/policy/approvals/${id}/decision`, { decision, comment: `${decision} from policy console` }),
     onSuccess: async () => { await client.invalidateQueries({ queryKey: ['policy', 'approvals'] }); toast.success('Approval decision saved.') },
     onError: () => toast.error('Approval decision was rejected.') })
+  const removeApproval = useMutation({ mutationFn: async (id: string) => apiClient.delete(`/policy/approvals/${id}`),
+    onSuccess: async () => { setDeletingApproval(undefined); await client.invalidateQueries({ queryKey: ['policy', 'approvals'] }); toast.success('Approval deleted.') },
+    onError: () => toast.error('Approval could not be deleted.') })
+  const bulkDeleteApprovals = useMutation({ mutationFn: async (items: Approval[]) =>
+    apiClient.post('/policy/approvals/actions/bulk-delete', { ids: items.map((item) => item.id) }),
+    onSuccess: async () => { await client.invalidateQueries({ queryKey: ['policy', 'approvals'] }); toast.success('Selected approvals deleted.') },
+    onError: () => toast.error('Selected approvals could not be deleted.') })
   const removeTool = useMutation({ mutationFn: async (name: string) => apiClient.delete(`/tools/${name}`),
     onSuccess: async () => { setDeletingTool(undefined); await client.invalidateQueries({ queryKey: ['tools'] }); toast.success('Tool disabled and removed from the registry.') },
     onError: () => toast.error('Tool could not be removed.') })
@@ -66,6 +79,12 @@ export function PolicyPage() {
     [rule.name, rule.effect, rule.priority, rule.environment ?? '', rule.action ?? ''].join(','))].join('\n')
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); const link = document.createElement('a')
     link.href = url; link.download = 'policies.csv'; link.click(); URL.revokeObjectURL(url) }
+  const downloadApprovalFile = async (item: Approval) => { try {
+    const transfer = item.plan.file_transfer as { filename?: string } | undefined
+    const response = await apiClient.get(`/policy/approvals/${item.id}/attachment`, { responseType: 'blob' })
+    const url = URL.createObjectURL(response.data); const link = document.createElement('a')
+    link.href = url; link.download = transfer?.filename ?? 'approval-attachment'; link.click(); URL.revokeObjectURL(url)
+  } catch { toast.error('Approval attachment could not be downloaded.') } }
   return <><Header><Search /><ThemeSwitch /><ProfileDropdown /></Header><Main>
     <div className='mb-4 flex flex-wrap items-center justify-between gap-3'><div><h1 className='text-2xl font-semibold tracking-tight'>Policy & Tool Registry</h1>
       <p className='text-sm text-muted-foreground'>Manage policy and human approvals through the API.</p></div>
@@ -84,10 +103,15 @@ export function PolicyPage() {
             { label: 'Delete', icon: Trash2, destructive: true, onSelect: setDeleting }]}
           bulkActions={[{ label: 'Export selected', icon: Download, onSelect: exportRules }, { label: 'Delete selected', icon: Trash2, destructive: true, onSelect: (items) => bulkDelete.mutate(items) }]} />
         </CardContent></Card></TabsContent>
-      <TabsContent value='approvals'><Card><CardHeader><CardTitle className='text-base'>Pending and Recent Approvals</CardTitle></CardHeader><CardContent>
+      <TabsContent value='approvals'><Card><CardHeader><div className='flex items-center justify-between gap-3'><CardTitle className='text-base'>Pending and Recent Approvals</CardTitle>
+        <Button size='sm' onClick={() => setEditingApproval(null)}><Plus className='size-4' />Add approval</Button></div></CardHeader><CardContent>
         <EnterpriseDataTable data={approvalsQuery.data ?? []} columns={approvalColumns} getRowId={(item) => item.id} entityName='approval' loading={approvalsQuery.isLoading}
           rowActions={[{ label: 'Approve', icon: Power, hidden: (item) => item.status !== 'pending', onSelect: (item) => decide.mutate({ id: item.id, decision: 'approved' }) },
-            { label: 'Reject', icon: PowerOff, destructive: true, hidden: (item) => item.status !== 'pending', onSelect: (item) => decide.mutate({ id: item.id, decision: 'rejected' }) }]} />
+            { label: 'Reject', icon: PowerOff, destructive: true, hidden: (item) => item.status !== 'pending', onSelect: (item) => decide.mutate({ id: item.id, decision: 'rejected' }) },
+            { label: 'Download file', icon: Download, hidden: (item) => !item.plan.file_transfer, onSelect: downloadApprovalFile },
+            { label: 'Edit', icon: Pencil, disabled: (item) => item.status !== 'pending', onSelect: setEditingApproval },
+            { label: 'Delete', icon: Trash2, destructive: true, onSelect: setDeletingApproval }]}
+          bulkActions={[{ label: 'Delete selected', icon: Trash2, destructive: true, onSelect: (items) => bulkDeleteApprovals.mutate(items) }]} />
       </CardContent></Card></TabsContent>
       <TabsContent value='tools'><Card><CardHeader><CardTitle className='flex items-center gap-2 text-base'><ShieldCheck className='size-4' />Registered Tools</CardTitle></CardHeader>
         <CardContent><EnterpriseDataTable data={toolsQuery.data ?? []} columns={toolColumns} getRowId={(tool) => tool.name} entityName='tool' loading={toolsQuery.isLoading}
@@ -105,7 +129,67 @@ export function PolicyPage() {
     <ConfirmDialog open={Boolean(deletingTool)} onOpenChange={(open) => !open && setDeletingTool(undefined)} title='Remove registered tool?'
       desc='The tool will be disabled for users, direct execution and AI tool calling. Its backend command template remains protected.' destructive isLoading={removeTool.isPending}
       handleConfirm={() => deletingTool && removeTool.mutate(deletingTool.name)} />
+    <ApprovalDialog key={editingApproval?.id ?? (editingApproval === null ? 'new' : 'closed')} record={editingApproval}
+      servers={serversQuery.data ?? []} open={editingApproval !== undefined} onOpenChange={(open) => !open && setEditingApproval(undefined)} />
+    <ConfirmDialog open={Boolean(deletingApproval)} onOpenChange={(open) => !open && setDeletingApproval(undefined)}
+      title='Delete approval?' desc='The approval request and its decision history will be removed.'
+      destructive isLoading={removeApproval.isPending}
+      handleConfirm={() => deletingApproval && removeApproval.mutate(deletingApproval.id)} />
   </Main></>
+}
+
+function ApprovalDialog({ record, servers, open, onOpenChange }: { record: Approval | null | undefined;
+  servers: ServerLookup[]; open: boolean; onOpenChange: (open: boolean) => void }) {
+  const client = useQueryClient()
+  const [form, setForm] = useState({
+    server_id: record?.server_id ?? '', action: record?.action ?? '',
+    reason: record?.reason ?? '', impact: record?.impact ?? '',
+    plan: JSON.stringify(record?.plan ?? {}, null, 2),
+  })
+  const [attachment, setAttachment] = useState<File>()
+  const save = useMutation({ mutationFn: async () => {
+    const payload = { ...form, server_id: form.server_id || null, plan: JSON.parse(form.plan || '{}') }
+    const response = record ? await apiClient.put<Approval>(`/policy/approvals/${record.id}`, payload) : await apiClient.post<Approval>('/policy/approvals', payload)
+    if (attachment) {
+      const upload = new FormData(); upload.append('attachment', attachment)
+      await apiClient.post(`/policy/approvals/${response.data.id}/attachment`, upload)
+    }
+    return response
+  }, onSuccess: async () => {
+    await client.invalidateQueries({ queryKey: ['policy', 'approvals'] }); onOpenChange(false); toast.success('Approval saved.')
+  }, onError: () => toast.error('Approval validation failed. Check the plan JSON and required fields.') })
+  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent className='max-h-[84svh] overflow-auto sm:max-w-[80vw]'>
+    <DialogHeader><DialogTitle>{record ? 'Edit' : 'Create'} approval request</DialogTitle>
+      <DialogDescription>Use approvals for a planned operation that requires an explicit human decision.</DialogDescription></DialogHeader>
+    <form id='approval-form' className='grid gap-4 sm:grid-cols-2' onSubmit={(event) => { event.preventDefault(); save.mutate() }}>
+      <div className='space-y-1 sm:col-span-2'><Label>Server</Label><SearchableSelect ariaLabel='Approval server' value={form.server_id}
+        allowClear placeholder='No specific server' searchPlaceholder='Search hostname or IP'
+        options={servers.map((item) => ({ value: item.id, label: `${item.hostname} - ${item.ip_address}` }))}
+        onValueChange={(server_id) => setForm({ ...form, server_id })} /></div>
+      <div className='space-y-1 sm:col-span-2'><Label>Action</Label><SearchableSelect ariaLabel='Approval action' value={form.action}
+        allowClear placeholder='Select a controlled action' searchPlaceholder='Search approval actions...'
+        options={[
+          { value: 'upload_file', label: 'Upload file to server' },
+          { value: 'download_file', label: 'Download file from server' },
+          { value: 'read_remote_file', label: 'Read remote file' },
+          { value: 'write_remote_file', label: 'Create or replace remote file' },
+          { value: 'create_remote_directory', label: 'Create remote directory' },
+          { value: 'move_remote_file', label: 'Move or rename remote file' },
+          { value: 'delete_remote_file', label: 'Delete one remote file' },
+          { value: 'run_ssh_command', label: 'Run SSH command' },
+        ]} onValueChange={(action) => setForm({ ...form, action })} /></div>
+      <div className='space-y-1'><Label>Reason</Label><Textarea required minLength={3} value={form.reason}
+        onChange={(event) => setForm({ ...form, reason: event.target.value })} /></div>
+      <div className='space-y-1'><Label>Expected impact</Label><Textarea value={form.impact}
+        onChange={(event) => setForm({ ...form, impact: event.target.value })} /></div>
+      <div className='space-y-1 sm:col-span-2'><Label>Execution plan JSON</Label><Textarea className='min-h-36 font-mono text-xs'
+        value={form.plan} onChange={(event) => setForm({ ...form, plan: event.target.value })} /></div>
+      <div className='space-y-2 rounded-md border p-4 sm:col-span-2'><Label htmlFor='approval-attachment'>Deployment attachment</Label>
+        <Input id='approval-attachment' type='file' onChange={(event) => setAttachment(event.target.files?.[0])} />
+        <p className='flex items-center gap-2 text-xs text-muted-foreground'><FileUp className='size-4' />The backend stages this file in the controlled workspace. Select the target Server above; transfer, write, move or deletion still requires its matching Policy decision.</p></div>
+    </form><DialogFooter><Button variant='outline' onClick={() => onOpenChange(false)}>Cancel</Button>
+      <Button form='approval-form' type='submit' disabled={save.isPending}>Save</Button></DialogFooter>
+  </DialogContent></Dialog>
 }
 
 function ToolDialog({ record, open, onOpenChange }: { record?: ToolRecord; open: boolean; onOpenChange: (open: boolean) => void }) {

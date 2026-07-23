@@ -1,259 +1,119 @@
 import { useMemo, useState } from 'react'
 import type { AxiosError } from 'axios'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { LoaderCircle, Play, ShieldCheck, SquareTerminal } from 'lucide-react'
-import { toast } from 'sonner'
+import { LoaderCircle, Play, ServerCog } from 'lucide-react'
 import { apiClient } from '@/lib/api-client'
-import { useIsDesktop } from '@/hooks/use-desktop'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from '@/components/ui/resizable'
 import { SearchableSelect } from '@/components/searchable-select'
 import { QueryLoadError } from '@/components/query-load-error'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import {
-  ResizableHandle,
-  ResizablePanel,
-  ResizablePanelGroup,
-} from '@/components/ui/resizable'
+import { EnterpriseDataTable, type EnterpriseColumn } from '@/components/enterprise-data-table'
 import { Header } from '@/components/layout/header'
 import { Main } from '@/components/layout/main'
 import { ProfileDropdown } from '@/components/profile-dropdown'
 import { Search } from '@/components/search'
 import { ThemeSwitch } from '@/components/theme-switch'
-import { ServerTargetSelector, type TargetEnvironment, type TargetServer, type TargetSystem } from '@/components/server-target-selector'
+import { useIsMobile } from '@/hooks/use-mobile'
+import { StatusBadge } from './status-badge'
 
-interface ServerRecord extends TargetServer {
-  server_type: string
-  ssh_config: { test_profile?: string }
-}
-
-interface ToolRecord {
-  name: string
-  description: string
-  risk_level: string
-  target_types: string[]
-  arguments_schema: Record<string, unknown>
-}
-
+interface SystemRecord { id: string; code: string; name: string }
 interface ExecutionResult {
-  action: string
+  server_id: string
+  hostname: string
+  ip_address: string
+  status: string
   decision: string
-  stdout: string | null
-  stderr: string | null
   exit_code: number | null
-  command_ref: string | null
-  confidence: { score: number; reason: string; need_more_data: boolean }
+  output: string
+  duration_ms: number
+  approval_id: string | null
 }
-
-interface ApiErrorBody {
-  error?: { message?: string; approval_id?: string }
-}
-
-interface DevelopmentStatus {
-  enabled: boolean
-  transport: string
-  profiles: Array<{ id: string; name: string; description: string }>
-}
+interface ErrorBody { error?: { message?: string }; detail?: string }
 
 export function TerminalPage() {
-  const isDesktop = useIsDesktop()
-  const [serverId, setServerId] = useState('')
-  const [action, setAction] = useState('')
-  const serversQuery = useQuery({
-    queryKey: ['inventory', 'servers'],
-    queryFn: async () =>
-      (await apiClient.get<ServerRecord[]>('/inventory/servers', { params: { page: 1, page_size: 200 } })).data,
+  const isMobile = useIsMobile()
+  const [systemId, setSystemId] = useState('')
+  const [command, setCommand] = useState('')
+  const [workers, setWorkers] = useState(10)
+  const systemsQuery = useQuery({
+    queryKey: ['inventory', 'systems', 'multi-server-terminal'],
+    queryFn: async () => (await apiClient.get<SystemRecord[]>('/inventory/systems', {
+      params: { page: 1, page_size: 1000 },
+    })).data,
   })
-  const systemsQuery = useQuery({ queryKey: ['inventory', 'systems', 'target-selector'], queryFn: async () =>
-    (await apiClient.get<TargetSystem[]>('/inventory/systems', { params: { page: 1, page_size: 200 } })).data })
-  const environmentsQuery = useQuery({ queryKey: ['inventory', 'environments', 'target-selector'], queryFn: async () =>
-    (await apiClient.get<TargetEnvironment[]>('/inventory/environments', { params: { page: 1, page_size: 200 } })).data })
-  const toolsQuery = useQuery({
-    queryKey: ['tools'],
-    queryFn: async () => (await apiClient.get<ToolRecord[]>('/tools')).data,
-  })
-  const developmentQuery = useQuery({
-    queryKey: ['development', 'status'],
-    queryFn: async () =>
-      (await apiClient.get<DevelopmentStatus>('/development/status')).data,
-    retry: false,
-    staleTime: 60_000,
-  })
-  const selectedServer = serversQuery.data?.find((item) => item.id === serverId)
-  const availableTools = useMemo(() => {
-    if (!selectedServer) return []
-    const normalizedOs = selectedServer.os.toLowerCase().includes('win')
-      ? 'windows'
-      : 'linux'
-    return (toolsQuery.data ?? []).filter(
-      (tool) =>
-        Object.keys(tool.arguments_schema).length === 0 &&
-        (tool.target_types.includes(selectedServer.server_type.toLowerCase()) ||
-          tool.target_types.includes(normalizedOs))
-    )
-  }, [selectedServer, toolsQuery.data])
   const execute = useMutation({
-    mutationFn: async () =>
-      (
-        await apiClient.post<ExecutionResult>('/tools/execute', {
-          server_id: serverId,
-          action,
-          arguments: {},
-          reason: `Human operator requested ${action} from controlled action console`,
-        })
-      ).data,
+    mutationFn: async () => (await apiClient.post<ExecutionResult[]>('/tools/execute-system', {
+      system_id: systemId,
+      command: command.trim(),
+      workers,
+      reason: `Human operator requested multi-server command: ${command.trim()}`,
+    })).data,
   })
-  const setProfile = useMutation({
-    mutationFn: async (profile: string) =>
-      (await apiClient.put(`/development/servers/${serverId}/profile`, { profile })).data,
-    onSuccess: async () => {
-      await serversQuery.refetch()
-      execute.reset()
-      toast.success('Development test profile updated.')
-    },
-    onError: () => toast.error('Test profile could not be updated.'),
-  })
-  const apiError = execute.error as AxiosError<ApiErrorBody> | null
-  const approvalId = apiError?.response?.data?.error?.approval_id
-  const errorMessage = apiError?.response?.data?.error?.message
+  const columns: EnterpriseColumn<ExecutionResult>[] = useMemo(() => [
+    { id: 'server', header: 'Server', accessor: (item) => item.hostname,
+      cell: (item) => <div><p className='font-medium'>{item.hostname}</p><p className='text-xs text-muted-foreground'>{item.ip_address}</p></div>, size: 180 },
+    { id: 'status', header: 'Status', accessor: (item) => item.status,
+      cell: (item) => <StatusBadge value={item.status} />, size: 110 },
+    { id: 'exit', header: 'Exit code', accessor: (item) => item.exit_code ?? '', size: 80 },
+    { id: 'duration', header: 'Duration', accessor: (item) => item.duration_ms,
+      cell: (item) => `${item.duration_ms} ms`, size: 90 },
+    { id: 'output', header: 'Output', accessor: (item) => item.output,
+      cell: (item) => <pre className='max-h-40 min-w-72 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/50 p-3 font-mono text-xs'>{item.output || 'No output returned.'}</pre>, size: 420 },
+  ], [])
+  const error = execute.error as AxiosError<ErrorBody> | null
+  const errorMessage = error?.response?.data?.error?.message ?? error?.response?.data?.detail
 
-  return (
-    <>
-      <Header>
-        <Search />
-        <ThemeSwitch />
-        <ProfileDropdown />
-      </Header>
-      <Main fixed>
-        <div className='mb-4'>
-          <h1 className='text-2xl font-semibold tracking-tight'>
-            Gateway Actions
-          </h1>
-          <p className='text-sm text-muted-foreground'>
-            Human-initiated actions routed through policy, Tool Registry and the
-            short-lived SSH Gateway.
-          </p>
-        </div>
-        <QueryLoadError visible={serversQuery.isError || systemsQuery.isError || environmentsQuery.isError || toolsQuery.isError}
-          retrying={serversQuery.isFetching || systemsQuery.isFetching || environmentsQuery.isFetching || toolsQuery.isFetching}
-          message='Targets or registered actions could not be loaded. Your session is preserved.' onRetry={() => Promise.all([
-            serversQuery.refetch(), systemsQuery.refetch(), environmentsQuery.refetch(), toolsQuery.refetch(),
-          ])} />
-        <ResizablePanelGroup
-          id='terminal-workspace'
-          orientation={isDesktop ? 'horizontal' : 'vertical'}
-          className='min-h-0 flex-1 overflow-hidden rounded-md border'
-        >
-          <ResizablePanel
-            id='terminal-targets'
-            defaultSize={isDesktop ? 300 : 240}
-            minSize={isDesktop ? 250 : 200}
-            maxSize={isDesktop ? 440 : '55%'}
-            groupResizeBehavior='preserve-pixel-size'
-          >
-          <Card className='flex h-full min-h-0 flex-col rounded-none border-0 shadow-none'>
-            <CardHeader>
-              <CardTitle className='text-base'>Targets</CardTitle>
-            </CardHeader>
-            <CardContent className='min-h-0 flex-1 space-y-2 overflow-auto'>
-              <ServerTargetSelector layout='sidebar' systems={systemsQuery.data ?? []} environments={environmentsQuery.data ?? []}
-                servers={serversQuery.data ?? []} value={serverId} onChange={(id) => { setServerId(id); setAction(''); execute.reset() }} />
-              {serversQuery.isLoading && (
-                <p className='text-sm text-muted-foreground'>
-                  Loading targets...
-                </p>
-              )}
-            </CardContent>
-          </Card>
-          </ResizablePanel>
-          <ResizableHandle withHandle aria-label='Resize target panel' />
-          <ResizablePanel id='terminal-console' minSize={isDesktop ? 480 : 320}>
-          <Card className='flex h-full min-h-0 flex-col rounded-none border-0 shadow-none'>
-            <CardHeader className='border-b'>
-              <div className='flex flex-wrap items-center justify-between gap-3'>
-                <CardTitle className='flex items-center gap-2 text-base'>
-                  <SquareTerminal className='size-4' />
-                  {selectedServer ? `${selectedServer.hostname} / ${selectedServer.ip_address}` : 'Select a target'}
-                </CardTitle>
-                {developmentQuery.data?.enabled && selectedServer && (
-                  <label className='flex items-center gap-2 text-xs text-muted-foreground'>
-                    Test profile
-                    <SearchableSelect ariaLabel='Development test profile' value={selectedServer.ssh_config.test_profile ?? 'healthy'}
-                      disabled={setProfile.isPending} onValueChange={(value) => setProfile.mutate(value)} className='h-8 min-w-48 text-xs'
-                      searchPlaceholder='Search test profiles...' options={developmentQuery.data.profiles.map((profile) => ({ value: profile.id, label: profile.name, keywords: profile.description }))} />
-                  </label>
-                )}
-              </div>
-            </CardHeader>
-            <CardContent className='flex min-h-0 flex-1 flex-col gap-4 p-4'>
-              <div className='grid gap-2 sm:grid-cols-[1fr_auto]'>
-                <SearchableSelect ariaLabel='Approved action' value={action} placeholder='Select an approved no-argument action'
-                  searchPlaceholder='Search registered actions...' disabled={!selectedServer}
-                  options={availableTools.map((tool) => ({ value: tool.name, label: `${tool.name} - ${tool.description}`, keywords: tool.risk_level }))}
-                  onValueChange={(value) => { setAction(value); execute.reset() }} />
-                <Button
-                  disabled={!serverId || !action || execute.isPending}
-                  onClick={() => execute.mutate()}
-                >
-                  {execute.isPending ? (
-                    <LoaderCircle className='size-4 animate-spin' />
-                  ) : (
-                    <Play className='size-4' />
-                  )}
-                  Execute
-                </Button>
-              </div>
-              <div className='min-h-0 flex-1 overflow-auto rounded-md bg-zinc-950 p-4 font-mono text-sm text-zinc-100'>
-                {!execute.data && !execute.error && (
-                  <p className='text-zinc-400'>
-                    Select a target and registered action.
-                  </p>
-                )}
-                {execute.data && (
-                  <>
-                    <p className='text-emerald-400'>
-                      Decision: {execute.data.decision}
-                    </p>
-                    <p>Reference: {execute.data.command_ref}</p>
-                    <pre className='mt-3 break-words whitespace-pre-wrap'>
-                      {execute.data.stdout ||
-                        execute.data.stderr ||
-                        'No output returned.'}
-                    </pre>
-                    <p className='mt-3 text-zinc-400'>
-                      Confidence:{' '}
-                      {Math.round(execute.data.confidence.score * 100)}% -{' '}
-                      {execute.data.confidence.reason}
-                    </p>
-                  </>
-                )}
-                {execute.error && (
-                  <div className='space-y-2 text-amber-300'>
-                    <p>{errorMessage ?? 'Controlled execution failed.'}</p>
-                    {approvalId && (
-                      <p className='flex items-center gap-2'>
-                        <ShieldCheck className='size-4' /> Approval request:{' '}
-                        {approvalId}
-                      </p>
-                    )}
-                  </div>
-                )}
-              </div>
-              <p className='text-xs text-muted-foreground'>
-                Arbitrary shell input is unavailable. Actions with arguments are
-                executed from AI Chat or dedicated workflows with validated
-                forms.
-              </p>
-              {developmentQuery.data?.enabled && selectedServer && (
-                <p className='text-xs text-muted-foreground'>
-                  {developmentQuery.data.profiles.find((profile) =>
-                    profile.id === (selectedServer.ssh_config.test_profile ?? 'healthy'))?.description}
-                </p>
-              )}
-            </CardContent>
-          </Card>
-          </ResizablePanel>
-        </ResizablePanelGroup>
-      </Main>
-    </>
-  )
+  return <>
+    <Header><Search /><ThemeSwitch /><ProfileDropdown /></Header>
+    <Main fixed>
+      <div className='mb-4 flex flex-wrap items-start justify-between gap-3'>
+        <div><h1 className='text-2xl font-semibold'>Multi-Server Terminal</h1>
+          <p className='text-sm text-muted-foreground'>Execute one validated CLI command concurrently across every server in a System.</p></div>
+      </div>
+      <QueryLoadError visible={systemsQuery.isError} retrying={systemsQuery.isFetching}
+        message='Systems could not be loaded.' onRetry={() => systemsQuery.refetch()} />
+      <ResizablePanelGroup id='multi-server-terminal-v1' orientation={isMobile ? 'vertical' : 'horizontal'}
+        className='min-h-0 flex-1 overflow-hidden rounded-md border'>
+        <ResizablePanel id='terminal-controls' defaultSize={isMobile ? 330 : 340} minSize={isMobile ? 280 : 300}
+          maxSize={isMobile ? 520 : 480} groupResizeBehavior='preserve-pixel-size'>
+          <section className='flex h-full flex-col gap-4 overflow-auto p-4'>
+            <div><h2 className='font-medium'>Execution target</h2>
+              <p className='text-xs text-muted-foreground'>One command is validated independently for every server.</p></div>
+            <div className='space-y-1.5'><Label>System</Label><SearchableSelect ariaLabel='Target System'
+              value={systemId} searchPlaceholder='Search Systems...' placeholder='Select a System'
+              options={(systemsQuery.data ?? []).map((item) => ({ value: item.id, label: `${item.code} - ${item.name}` }))}
+              onValueChange={(value) => { setSystemId(value); execute.reset() }} /></div>
+            <div className='space-y-1.5'><Label htmlFor='terminal-command'>CLI command</Label><Textarea id='terminal-command'
+              className='min-h-28 resize-y font-mono' maxLength={512} value={command}
+              placeholder='df -h' onChange={(event) => { setCommand(event.target.value); execute.reset() }} /></div>
+            <div className='space-y-1.5'><Label htmlFor='terminal-workers'>Parallel workers</Label><Input id='terminal-workers'
+              type='number' min={1} max={32} value={workers} onChange={(event) => setWorkers(Math.max(1, Math.min(32, Number(event.target.value) || 1)))} />
+              <p className='text-xs text-muted-foreground'>Choose 1–32 concurrent SSH Gateway workers.</p></div>
+            {errorMessage && <div className='rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive'>{errorMessage}</div>}
+            <div className='mt-auto space-y-3'><div className='flex items-start gap-2 text-xs text-muted-foreground'>
+              <ServerCog className='mt-0.5 size-4 shrink-0' />Policy, command validation, Gateway limits and Audit apply to every target.
+            </div><Button className='w-full' disabled={!systemId || !command.trim() || execute.isPending}
+              onClick={() => execute.mutate()}>{execute.isPending ? <LoaderCircle className='size-4 animate-spin' /> : <Play className='size-4' />}Execute on System</Button></div>
+          </section>
+        </ResizablePanel>
+        <ResizableHandle withHandle aria-label='Resize terminal controls and results' />
+        <ResizablePanel id='terminal-results' minSize={isMobile ? 360 : 520}>
+          <section className='flex h-full min-h-0 flex-col p-4'>
+            <div className='mb-3 flex items-center justify-between gap-3'><div><h2 className='font-medium'>Execution results</h2>
+              <p className='text-xs text-muted-foreground'>Server-specific status, output and duration.</p></div>
+              {execute.data && <div className='text-right text-xs'><p className='font-medium'>{execute.data.length} processed</p>
+                <p className='text-muted-foreground'>{execute.data.filter((item) => item.status === 'success').length} successful</p></div>}
+            </div>
+            <div className='min-h-0 flex-1'><EnterpriseDataTable data={execute.data ?? []} columns={columns} getRowId={(item) => item.server_id}
+              entityName='server result' searchPlaceholder='Search server, IP, status or output'
+              loading={execute.isPending}
+              emptyTitle='No execution results' emptyDescription='Select a System and run a validated command to see one result per server.' /></div>
+          </section>
+        </ResizablePanel>
+      </ResizablePanelGroup>
+    </Main>
+  </>
 }

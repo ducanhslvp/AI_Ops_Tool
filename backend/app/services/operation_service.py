@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from hashlib import sha256
 
-from sqlalchemy import select
+from sqlalchemy import case, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ApprovalRequired, PermissionDenied
@@ -38,12 +38,16 @@ class OperationService:
         reason: str,
         session_id: str | None,
         approval_id: str | None = None,
+        skip_command_consent: bool = False,
+        bypass_policy: bool = False,
     ) -> dict:
         tool = await resolve_effective_tool(self.session, self.registry, action)
         if not self.registry.supports_target(tool, server.server_type, server.os):
             raise PermissionDenied("Tool is not allowed for this server target type")
         command = self.registry.render_command(action, server.os, arguments)
-        if action == "run_ssh_command" and approval_id is None:
+        if action == "run_ssh_command" and approval_id is None and not (
+            skip_command_consent or bypass_policy
+        ):
             await self._require_command_consent(
                 user=user, server=server, command=command, arguments=arguments,
                 reason=reason, session_id=session_id,
@@ -58,6 +62,9 @@ class OperationService:
         consent_only = bool(approved_request and
                             approved_request.plan.get("kind") == "ai_command_consent")
         decision = (
+            PolicyDecision.allow
+            if bypass_policy
+            else
             PolicyDecision.allow
             if approved_request is not None and not consent_only
             else await self.policy.evaluate(
@@ -94,6 +101,8 @@ class OperationService:
                 reason=reason,
                 impact=f"{action} on {server.hostname} may affect service availability.",
                 plan={
+                    "kind": "ai_tool_approval" if session_id else "tool_approval",
+                    "session_id": session_id,
                     "action": action,
                     "arguments": arguments,
                     "command_ref": self._redacted_ref(command),
@@ -143,14 +152,19 @@ class OperationService:
             session_id=session_id,
             server_id=server.id,
             prompt=reason,
-            reasoning_summary="Approved read/write tool executed through backend SSH gateway.",
+            reasoning_summary=(
+                "Session-only authorized bypass was active; command validation, SSH Gateway "
+                "controls and audit remained enforced."
+                if bypass_policy
+                else "Approved read/write tool executed through backend SSH gateway."
+            ),
             tool_name=action,
             ssh_command=command,
             output=result.stdout or result.stderr,
             decision=decision,
             duration_ms=result.duration_ms,
             exit_code=result.exit_code,
-            approval_used=approved_request is not None,
+            approval_used=approved_request is not None or bypass_policy,
             result=AuditResult.success if result.exit_code == 0 else AuditResult.failed,
         )
         return {
@@ -160,6 +174,7 @@ class OperationService:
             "stdout": result.stdout,
             "stderr": result.stderr,
             "exit_code": result.exit_code,
+            "duration_ms": result.duration_ms,
             "command_ref": self._redacted_ref(command),
             "approval_id": None,
             "confidence": {
@@ -177,22 +192,56 @@ class OperationService:
         ai_session = await self.session.get(AiSession, session_id) if session_id else None
         if ai_session and ai_session.user_id == user.id and ai_session.accept_all_commands:
             return
-        remembered = await self.session.scalar(select(AiCommandApproval.id).where(
-            AiCommandApproval.user_id == user.id,
-            AiCommandApproval.system_id == server.system_id,
-            AiCommandApproval.server_id == server.id,
-            AiCommandApproval.command_hash == command_hash,
-            AiCommandApproval.is_active.is_(True),
-        ))
-        if remembered:
+        remembered = await self.session.scalar(
+            select(AiCommandApproval).where(
+                AiCommandApproval.user_id == user.id,
+                AiCommandApproval.command_hash == command_hash,
+                or_(
+                    (
+                        AiCommandApproval.system_id == server.system_id
+                    ) & (AiCommandApproval.server_id == server.id),
+                    (
+                        AiCommandApproval.system_id.is_(None)
+                    ) & (AiCommandApproval.server_id.is_(None)),
+                ),
+            ).order_by(
+                case((AiCommandApproval.server_id == server.id, 0), else_=1),
+                AiCommandApproval.updated_at.desc(),
+            )
+        )
+        now = datetime.now(UTC)
+        if remembered is None:
+            remembered = AiCommandApproval(
+                user_id=user.id, system_id=server.system_id, server_id=server.id,
+                command_hash=command_hash, command=command, effect="approval_required",
+                description="Automatically registered from an AI command proposal",
+                is_active=True, use_count=1, last_used_at=now,
+            )
+            self.session.add(remembered)
+            await self.session.flush()
+        else:
+            remembered.command = command
+            remembered.use_count += 1
+            remembered.last_used_at = now
+        if remembered.is_active and remembered.effect == "allow":
             return
+        if remembered.is_active and remembered.effect == "deny":
+            await self.audit.record(
+                user_id=user.id, session_id=session_id, server_id=server.id, prompt=reason,
+                reasoning_summary="SSH Command Manager denied the AI-proposed command.",
+                tool_name="run_ssh_command", ssh_command=command, output=None,
+                decision="deny", duration_ms=0, result=AuditResult.denied,
+            )
+            await self.session.commit()
+            raise PermissionDenied("SSH Command Manager denied this command")
         approval = ApprovalRequest(
             requested_by_user_id=user.id, server_id=server.id, action="run_ssh_command",
             reason=reason,
             impact="Read-only command proposed by AI; backend policy still applies after consent.",
             plan={"kind": "ai_command_consent", "session_id": session_id,
                   "system_id": server.system_id, "arguments": arguments,
-                  "command": command, "command_hash": command_hash},
+                  "command": command, "command_hash": command_hash,
+                  "command_rule_id": remembered.id},
         )
         self.session.add(approval)
         await self.session.flush()

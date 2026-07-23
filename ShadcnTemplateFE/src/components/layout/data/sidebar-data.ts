@@ -126,6 +126,11 @@ export const sidebarData: SidebarData = {
               url: '/settings/account',
               icon: KeyRound,
             },
+            {
+              title: 'SSH Commands',
+              url: '/settings/ssh-commands',
+              icon: SquareTerminal,
+            },
           ],
         },
         ...(import.meta.env.DEV ? [{

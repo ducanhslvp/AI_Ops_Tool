@@ -2,9 +2,9 @@ import json
 from datetime import UTC, datetime
 from hashlib import sha256
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import Response, StreamingResponse
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from fastapi import Depends
@@ -21,10 +21,11 @@ from app.domain.models import (
 from app.domain.models.enums import ApprovalStatus, AuditResult
 from app.schemas.operations import (
     AiChatRequest, AiChatResponse, AiCommandConsentDecision, AiProviderSwitchRequest,
-    AiSessionCreate, AiSessionUpdate,
+    AiSessionBypassRequest, AiSessionCreate, AiSessionUpdate,
 )
 from app.schemas.common import PaginationDep, set_pagination_headers
 from app.services.ai_service import AiService
+from app.services.audit_service import AuditService
 from app.services.operation_service import OperationService
 from app.services.ssh_gateway import SshGateway
 from app.services.tool_registry import ToolRegistry
@@ -134,10 +135,14 @@ async def decide_command_consent(
         if existing:
             existing.is_active = True
             existing.command = command
+            existing.effect = "allow"
+            existing.last_used_at = datetime.now(UTC)
         else:
             session.add(AiCommandApproval(
                 user_id=user.id, system_id=server.system_id, server_id=server.id,
-                command_hash=command_hash, command=command, is_active=True,
+                command_hash=command_hash, command=command, effect="allow",
+                description="Allowed from AI command consent", is_active=True,
+                use_count=1, last_used_at=datetime.now(UTC),
             ))
     consent.status = ApprovalStatus.approved
     await session.flush()
@@ -311,6 +316,7 @@ async def list_ai_sessions(
              "context_size": item.context_size, "memory": item.memory, "model": item.model,
              "reasoning_effort": item.reasoning_effort,
              "include_full_memory": item.include_full_memory,
+             "bypass_policy": item.bypass_policy,
              "created_at": item.created_at, "updated_at": item.updated_at} for item in items]
 
 
@@ -333,6 +339,7 @@ async def create_ai_session(
             "status": item.status, "model": item.model,
             "reasoning_effort": item.reasoning_effort,
             "include_full_memory": item.include_full_memory,
+            "bypass_policy": item.bypass_policy,
             "created_at": item.created_at, "updated_at": item.updated_at}
 
 
@@ -345,16 +352,56 @@ async def get_ai_session(
     item = await session.get(AiSession, session_id)
     if item is None or item.user_id != user.id:
         raise HTTPException(status_code=404, detail="AI session not found")
-    messages = (await session.scalars(select(AiMessage).where(AiMessage.session_id == item.id)
-        .order_by(AiMessage.created_at.asc()))).all()
+    message_total = await session.scalar(select(func.count(AiMessage.id)).where(
+        AiMessage.session_id == item.id)) or 0
+    messages = list((await session.scalars(select(AiMessage).where(
+        AiMessage.session_id == item.id).order_by(
+            AiMessage.created_at.desc(), AiMessage.id.desc()).limit(50))).all())
+    messages.reverse()
     return {"id": item.id, "system_id": item.system_id, "title": item.title,
             "status": item.status, "last_activity_at": item.last_activity_at,
             "context_size": item.context_size, "memory": item.memory, "model": item.model,
             "reasoning_effort": item.reasoning_effort,
             "include_full_memory": item.include_full_memory,
+            "bypass_policy": item.bypass_policy,
+            "messages_has_more": message_total > len(messages),
             "messages": [{"id": message.id, "role": message.role, "content": message.content,
                           "tool_events": message.tool_events, "confidence": message.confidence,
                           "created_at": message.created_at} for message in messages]}
+
+
+@router.get("/sessions/{session_id}/messages")
+async def get_ai_session_messages(
+    session_id: str,
+    session: DbSession,
+    before: datetime | None = None,
+    before_id: str | None = None,
+    limit: int = Query(default=50, ge=10, le=100),
+    user: User = Depends(require_permission("ai:chat")),
+) -> dict:
+    item = await session.get(AiSession, session_id)
+    if item is None or item.user_id != user.id:
+        raise HTTPException(status_code=404, detail="AI session not found")
+    statement = select(AiMessage).where(AiMessage.session_id == item.id)
+    if before is not None:
+        statement = statement.where(
+            or_(
+                AiMessage.created_at < before,
+                and_(AiMessage.created_at == before, AiMessage.id < before_id),
+            ) if before_id else AiMessage.created_at < before
+        )
+    messages = list((await session.scalars(statement.order_by(
+        AiMessage.created_at.desc(), AiMessage.id.desc()).limit(limit + 1))).all())
+    has_more = len(messages) > limit
+    messages = messages[:limit]
+    messages.reverse()
+    return {
+        "items": [{"id": message.id, "role": message.role, "content": message.content,
+                   "tool_events": message.tool_events, "confidence": message.confidence,
+                   "created_at": message.created_at} for message in messages],
+        "has_more": has_more,
+        "next_before": messages[0].created_at if has_more and messages else None,
+    }
 
 
 @router.patch("/sessions/{session_id}")
@@ -370,6 +417,9 @@ async def update_ai_session(
     values = payload.model_dump(exclude_unset=True)
     if "title" in values:
         item.title = values["title"].strip()
+    # Bypass has a dedicated administrator-only endpoint and cannot be smuggled through
+    # ordinary conversation preferences.
+    values.pop("bypass_policy", None)
     for field in ("model", "reasoning_effort", "include_full_memory"):
         if field in values:
             setattr(item, field, values[field])
@@ -378,7 +428,41 @@ async def update_ai_session(
             "status": item.status, "model": item.model,
             "reasoning_effort": item.reasoning_effort,
             "include_full_memory": item.include_full_memory,
+            "bypass_policy": item.bypass_policy,
             "updated_at": item.updated_at}
+
+
+@router.put("/sessions/{session_id}/policy-bypass")
+async def set_ai_session_policy_bypass(
+    session_id: str,
+    payload: AiSessionBypassRequest,
+    session: DbSession,
+    actor: User = Depends(require_permission("ai:policy_bypass")),
+) -> dict:
+    item = await session.get(AiSession, session_id)
+    if item is None or item.user_id != actor.id:
+        raise HTTPException(status_code=404, detail="AI session not found")
+    item.bypass_policy = payload.enabled
+    await AuditService(session).record(
+        user_id=actor.id,
+        session_id=item.id,
+        server_id=None,
+        prompt="Authorized operator changed session-only AI policy bypass.",
+        reasoning_summary=(
+            "Policy and approval bypass enabled for this AI session; command validation, "
+            "SSH Gateway controls and audit remain active."
+            if payload.enabled
+            else "Session-only AI policy bypass disabled."
+        ),
+        tool_name="session_policy_bypass",
+        ssh_command=None,
+        output=f"enabled={payload.enabled}",
+        decision="bypass_enabled" if payload.enabled else "bypass_disabled",
+        duration_ms=0,
+        result=AuditResult.success,
+    )
+    await session.commit()
+    return {"session_id": item.id, "bypass_policy": item.bypass_policy}
 
 
 @router.delete("/sessions/{session_id}", status_code=204)

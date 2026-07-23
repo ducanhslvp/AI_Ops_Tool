@@ -94,7 +94,7 @@ export function DiscoveryPage() {
     <div className='mb-4 flex flex-wrap items-start justify-between gap-3'><div><h1 className='flex items-center gap-2 text-2xl font-semibold'><Waypoints className='size-5' />Infrastructure Discovery</h1>
       <p className='text-sm text-muted-foreground'>Evidence-driven infrastructure topology through governed backend tools.</p></div><div className='flex gap-2'>
       <Button size='sm' variant='outline' onClick={() => setScheduleManager(true)}><CalendarClock className='size-4' />Scheduled scans ({schedules.data?.length ?? 0})</Button>
-      <Button size='sm' disabled={!canRun || run.isPending} onClick={() => run.mutate()}><Play className='size-4' />{run.isPending ? 'Scanning...' : 'Run discovery'}</Button></div></div>
+      <Button size='sm' disabled={!canRun || run.isPending} onClick={() => run.mutate()}><Play className='size-4' />{run.isPending ? 'Collecting and analyzing...' : 'Run discovery with AI'}</Button></div></div>
     <div className='mb-4 grid gap-px overflow-hidden rounded-md border bg-border sm:grid-cols-4'><Metric label='Servers' value={current?.nodes.length ?? 0} /><Metric label='Dependencies' value={current?.edges.length ?? 0} />
       <Metric label='Containers' value={(current?.nodes ?? []).reduce((sum, node) => sum + (node.data.containers?.length ?? 0), 0)} /><Metric label='Changes' value={changeCount(current)} /></div>
     <div className='mb-3 flex flex-wrap items-center gap-2'><div className='flex h-9 rounded-md border p-0.5'><Button size='sm' variant={scopeMode === 'system' ? 'secondary' : 'ghost'} onClick={() => setScopeMode('system')}>System</Button><Button size='sm' variant={scopeMode === 'servers' ? 'secondary' : 'ghost'} onClick={() => setScopeMode('servers')}>Servers</Button></div>

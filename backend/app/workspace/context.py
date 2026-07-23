@@ -66,7 +66,7 @@ class WorkspaceContextBuilder:
         elif targets:
             sections.extend(["", "AVAILABLE OPERATION TARGETS",
                              "No server was preselected. Choose server_id for each "
-                             "run_ssh_command call:"])
+                             "SSH Gateway tool call:"])
             sections.extend(
                 f"- {item.id} | {item.hostname} | {item.ip_address} | {item.os} | {item.status}"
                 for item in targets

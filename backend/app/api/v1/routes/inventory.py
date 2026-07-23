@@ -133,6 +133,13 @@ async def get_system(
 @router.post("/systems", response_model=SystemOut, status_code=201)
 async def create_system(payload: SystemCreate, session: DbSession,
                         _: User = Depends(require_permission("inventory:write"))):
+    if payload.default_credential_id:
+        credential = await _get_or_404(session, Credential, payload.default_credential_id)
+        if credential.system_id is not None:
+            raise HTTPException(
+                status_code=422,
+                detail="A new System can use only a Global default credential",
+            )
     item = System(**payload.model_dump())
     session.add(item)
     await session.flush()
@@ -146,6 +153,13 @@ async def create_system(payload: SystemCreate, session: DbSession,
 async def update_system(item_id: str, payload: SystemCreate, session: DbSession,
                         _: User = Depends(require_permission("inventory:write"))):
     item = await _get_or_404(session, System, item_id)
+    if payload.default_credential_id:
+        credential = await _get_or_404(session, Credential, payload.default_credential_id)
+        if credential.system_id not in {None, item.id}:
+            raise HTTPException(
+                status_code=422,
+                detail="Default credential must be Global or belong to this System",
+            )
     old_code = item.code
     for key, value in payload.model_dump().items():
         setattr(item, key, value)
@@ -415,11 +429,15 @@ async def list_credentials(session: DbSession,
 async def create_credential(payload: CredentialCreate, session: DbSession,
                             _: User = Depends(require_permission("secret:write")),
                             secret_manager: SecretManager = Depends(get_secret_manager)):
-    await _get_or_404(session, System, payload.system_id)
+    if payload.system_id is not None:
+        await _get_or_404(session, System, payload.system_id)
     item = Credential(name=payload.name, system_id=payload.system_id,
                       username=payload.secret_payload["username"], provider="local_aes256_gcm",
                       encrypted_payload=secret_manager.encrypt(payload.secret_payload),
-                      metadata_json={**payload.metadata_json, "scope": "shared"})
+                      metadata_json={
+                          **payload.metadata_json,
+                          "scope": "shared" if payload.system_id else "global",
+                      })
     session.add(item)
     await session.commit()
     await session.refresh(item)
@@ -431,12 +449,14 @@ async def update_credential(item_id: str, payload: CredentialUpdate, session: Db
                             _: User = Depends(require_permission("secret:write")),
                             secret_manager: SecretManager = Depends(get_secret_manager)):
     item = await _get_or_404(session, Credential, item_id)
-    await _get_or_404(session, System, payload.system_id)
+    if payload.system_id is not None:
+        await _get_or_404(session, System, payload.system_id)
     item.name = payload.name
     item.system_id = payload.system_id
-    item.metadata_json = {**payload.metadata_json, "scope": str(
-        (item.metadata_json or {}).get("scope", "shared")
-    )}
+    item.metadata_json = {
+        **payload.metadata_json,
+        "scope": "shared" if payload.system_id else "global",
+    }
     item.is_active = payload.is_active
     if payload.secret_payload is not None:
         item.encrypted_payload = secret_manager.encrypt(payload.secret_payload)
@@ -456,6 +476,11 @@ async def delete_credential(item_id: str, session: DbSession,
     in_use = await session.scalar(select(Server.id).where(Server.credential_id == item_id).limit(1))
     if in_use:
         raise HTTPException(status_code=409, detail="Credential is referenced by a server")
+    default_in_use = await session.scalar(select(System.id).where(
+        System.default_credential_id == item_id
+    ).limit(1))
+    if default_in_use:
+        raise HTTPException(status_code=409, detail="Credential is a System default")
     await session.delete(await _get_or_404(session, Credential, item_id))
     await session.commit()
     return Response(status_code=204)

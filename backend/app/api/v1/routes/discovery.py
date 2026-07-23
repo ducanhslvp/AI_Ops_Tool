@@ -4,8 +4,9 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import func, select
 
 from app.api.dependencies import (
-    DbSession, get_ssh_gateway, get_tool_registry, require_permission,
+    DbSession, get_gateway, get_ssh_gateway, get_tool_registry, require_permission,
 )
+from app.ai.gateway import AIGateway
 from app.domain.models import DiscoveryScan, DiscoverySchedule, System, User
 from app.schemas.common import PaginationDep, set_pagination_headers
 from app.schemas.discovery import (
@@ -52,8 +53,9 @@ async def create_scan(
     user: User = Depends(require_permission("tool:execute")),
     registry: ToolRegistry = Depends(get_tool_registry),
     gateway: SshGateway = Depends(get_ssh_gateway),
+    ai_gateway: AIGateway = Depends(get_gateway),
 ) -> DiscoveryScan:
-    return await DiscoveryService(session, registry, gateway).run(payload, user)
+    return await DiscoveryService(session, registry, gateway, ai_gateway).run(payload, user)
 
 
 @router.get("/scans/{scan_id}", response_model=DiscoveryScanOut)
@@ -117,6 +119,8 @@ async def run_schedule(
     user: User = Depends(require_permission("tool:execute")),
     registry: ToolRegistry = Depends(get_tool_registry),
     gateway: SshGateway = Depends(get_ssh_gateway),
+    ai_gateway: AIGateway = Depends(get_gateway),
 ) -> DiscoveryScan:
     schedule = await _schedule_or_404(session, schedule_id)
-    return await DiscoveryService(session, registry, gateway).run_schedule(schedule, user)
+    return await DiscoveryService(
+        session, registry, gateway, ai_gateway).run_schedule(schedule, user)

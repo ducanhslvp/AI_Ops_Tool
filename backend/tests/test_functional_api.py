@@ -8,7 +8,7 @@ from sqlalchemy.pool import StaticPool
 from app.core.security import hash_password
 from app.db.base import Base
 from app.db.session import get_db_session
-from app.domain.models import Permission, Role, User
+from app.domain.models import AiMessage, Permission, Role, User
 from app.main import create_app
 
 
@@ -167,6 +167,66 @@ async def test_admin_crud_exports_dashboard_and_viewer_rbac() -> None:
         assert server_detail.status_code == 200
         assert "encrypted_payload" not in server_detail.text
 
+        chat_session = await client.post(
+            "/api/v1/ai/sessions",
+            headers=admin_headers,
+            json={"system_id": system_id, "title": "Lazy history validation"},
+        )
+        assert chat_session.status_code == 201
+        chat_session_id = chat_session.json()["id"]
+        async with session_factory() as session:
+            session.add_all([
+                AiMessage(
+                    session_id=chat_session_id,
+                    role="user" if index % 2 == 0 else "assistant",
+                    content=f"History message {index:03d}",
+                )
+                for index in range(65)
+            ])
+            await session.commit()
+        latest_history = await client.get(
+            f"/api/v1/ai/sessions/{chat_session_id}", headers=admin_headers
+        )
+        assert latest_history.status_code == 200
+        assert len(latest_history.json()["messages"]) == 50
+        assert latest_history.json()["messages_has_more"] is True
+        oldest_loaded = latest_history.json()["messages"][0]["created_at"]
+        older_history = await client.get(
+            f"/api/v1/ai/sessions/{chat_session_id}/messages",
+            headers=admin_headers,
+            params={"before": oldest_loaded,
+                    "before_id": latest_history.json()["messages"][0]["id"], "limit": 50},
+        )
+        assert older_history.status_code == 200
+        assert len(older_history.json()["items"]) == 15
+        assert older_history.json()["has_more"] is False
+        bypass_enabled = await client.put(
+            f"/api/v1/ai/sessions/{chat_session_id}/policy-bypass",
+            headers=admin_headers,
+            json={"enabled": True},
+        )
+        assert bypass_enabled.status_code == 200
+        assert bypass_enabled.json()["bypass_policy"] is True
+        ai_audit = await client.get(
+            "/api/v1/audit",
+            headers=admin_headers,
+            params={"ai_only": True, "system_id": system_id, "page_size": 1000},
+        )
+        assert ai_audit.status_code == 200
+        assert any(
+            item["tool_name"] == "session_policy_bypass"
+            and item["session_id"] == chat_session_id
+            and item["system_code"] == "PAY"
+            for item in ai_audit.json()
+        )
+        bypass_disabled = await client.put(
+            f"/api/v1/ai/sessions/{chat_session_id}/policy-bypass",
+            headers=admin_headers,
+            json={"enabled": False},
+        )
+        assert bypass_disabled.status_code == 200
+        assert bypass_disabled.json()["bypass_policy"] is False
+
         development_status = await client.get(
             "/api/v1/development/status", headers=viewer_headers
         )
@@ -255,6 +315,79 @@ async def test_admin_crud_exports_dashboard_and_viewer_rbac() -> None:
         assert bulk_delete.status_code == 200
         assert bulk_delete.json() == {"deleted": 1}
 
+        approval = await client.post(
+            "/api/v1/policy/approvals",
+            headers=admin_headers,
+            json={"server_id": server_id, "action": "restart_service",
+                  "reason": "Validate approval CRUD", "impact": "Short interruption",
+                  "plan": {"service": "nginx"}},
+        )
+        assert approval.status_code == 201
+        approval_id = approval.json()["id"]
+        attachment = await client.post(
+            f"/api/v1/policy/approvals/{approval_id}/attachment",
+            headers=admin_headers,
+            files={"attachment": ("release.txt", b"version=2026.07", "text/plain")},
+        )
+        assert attachment.status_code == 200
+        attachment_download = await client.get(
+            f"/api/v1/policy/approvals/{approval_id}/attachment",
+            headers=admin_headers,
+        )
+        assert attachment_download.status_code == 200
+        assert attachment_download.content == b"version=2026.07"
+        approval_update = await client.put(
+            f"/api/v1/policy/approvals/{approval_id}",
+            headers=admin_headers,
+            json={"server_id": server_id, "action": "restart_service",
+                  "reason": "Updated approval reason", "impact": "No expected downtime",
+                  "plan": {"service": "nginx", "validate": True}},
+        )
+        assert approval_update.status_code == 200
+        assert approval_update.json()["reason"] == "Updated approval reason"
+        approval_list = await client.get(
+            "/api/v1/policy/approvals", headers=admin_headers
+        )
+        assert any(item["id"] == approval_id for item in approval_list.json())
+        approval_delete = await client.delete(
+            f"/api/v1/policy/approvals/{approval_id}", headers=admin_headers
+        )
+        assert approval_delete.status_code == 204
+
+        ssh_rule = await client.post(
+            "/api/v1/admin/ssh-commands",
+            headers=admin_headers,
+            json={"system_id": system_id, "server_id": server_id,
+                  "command": "free -h", "effect": "allow",
+                  "description": "Approved memory diagnostic", "is_active": True},
+        )
+        assert ssh_rule.status_code == 201
+        assert ssh_rule.json()["effect"] == "allow"
+        approved_memory = await client.post(
+            "/api/v1/tools/execute",
+            headers=admin_headers,
+            json={"server_id": server_id, "action": "run_ssh_command",
+                  "arguments": {"command": "free -h"},
+                  "reason": "Validate approved local simulation command"},
+        )
+        assert approved_memory.status_code == 200
+        assert approved_memory.json()["exit_code"] == 0
+        assert "Mem" in approved_memory.json()["stdout"]
+        ssh_rule_update = await client.put(
+            f"/api/v1/admin/ssh-commands/{ssh_rule.json()['id']}",
+            headers=admin_headers,
+            json={"system_id": system_id, "server_id": server_id,
+                  "command": "free -h", "effect": "approval_required",
+                  "description": "Require consent again", "is_active": True},
+        )
+        assert ssh_rule_update.status_code == 200
+        assert ssh_rule_update.json()["use_count"] >= 1
+        ssh_rule_delete = await client.delete(
+            f"/api/v1/admin/ssh-commands/{ssh_rule.json()['id']}",
+            headers=admin_headers,
+        )
+        assert ssh_rule_delete.status_code == 204
+
         provider = await client.post(
             "/api/v1/admin/ai-providers",
             headers=admin_headers,
@@ -314,6 +447,17 @@ async def test_admin_crud_exports_dashboard_and_viewer_rbac() -> None:
         assert dashboard.json()["components"]["knowledge_documents"] == 1
         assert audit_export.status_code == 200
         assert audit_export.headers["content-type"].startswith("text/csv")
+        audit_records = await client.get(
+            "/api/v1/audit", headers=admin_headers, params={"page_size": 1000}
+        )
+        assert audit_records.status_code == 200 and len(audit_records.json()) >= 2
+        audit_delete = await client.delete(
+            f"/api/v1/audit/{audit_records.json()[0]['id']}", headers=admin_headers
+        )
+        assert audit_delete.status_code == 204
+        integrity = await client.get("/api/v1/audit/integrity", headers=admin_headers)
+        assert integrity.status_code == 200
+        assert integrity.json()["valid"] is True
 
         for path in [
             f"/api/v1/reports/{report_id}",
@@ -324,6 +468,7 @@ async def test_admin_crud_exports_dashboard_and_viewer_rbac() -> None:
             f"/api/v1/inventory/servers/{server_id}",
             f"/api/v1/inventory/systems/{system_id}",
             f"/api/v1/inventory/environments/{environment_id}",
+            f"/api/v1/ai/sessions/{chat_session_id}",
         ]:
             response = await client.delete(path, headers=admin_headers)
             assert response.status_code == 204

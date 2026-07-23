@@ -63,6 +63,16 @@ async def test_read_only_df_format_variants_use_disk_snapshot() -> None:
 
 
 @pytest.mark.asyncio
+async def test_accepted_human_readable_memory_command_uses_snapshot() -> None:
+    adapter = LocalSimulationAdapter(_settings())
+
+    result = await adapter.execute(_server(), "free -h")
+
+    assert result.exit_status == 0
+    assert "Mem" in result.stdout
+
+
+@pytest.mark.asyncio
 async def test_adapter_rejects_arbitrary_shell_and_unknown_profile() -> None:
     adapter = LocalSimulationAdapter(_settings())
     with pytest.raises(AppError, match="not registered"):

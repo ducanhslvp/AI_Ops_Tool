@@ -19,10 +19,11 @@ const statusVariant: Record<
   blocked: 'destructive',
 }
 
-export function StatusBadge({ value }: { value: string }) {
+export function StatusBadge({ value }: { value: string | null | undefined }) {
+  const normalized = value?.trim() || 'unknown'
   return (
-    <Badge variant={statusVariant[value.toLowerCase()] ?? 'outline'}>
-      {value.replace('_', ' ')}
+    <Badge variant={statusVariant[normalized.toLowerCase()] ?? 'outline'}>
+      {normalized.replace(/_/g, ' ')}
     </Badge>
   )
 }
